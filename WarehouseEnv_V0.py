@@ -362,6 +362,10 @@ print("reseting ======")
 print(env.reset())
 
 
-print("take a action to select task 1 by a human")
+print("action space")
+print(env.action_space)
+print(env.action_space.sample())
+
+print("take a action to select task 1 by a human====")
 print(env.step(1, env.HUMAN))
         
