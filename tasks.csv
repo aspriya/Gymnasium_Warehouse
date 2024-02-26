@@ -1,0 +1,11 @@
+task_id,type,product,from loc,to loc,time,order,status
+001,pick,p1,l1,l30,30,o1,available
+002,put,p2,l31,l11,20,,available
+003,pick,p3,l3,l32,10,o2,available
+004,pick,p4,l4,l30,5,o1,available
+005,repl,p4,l5,l4,8,o1,available
+006,pick,p5,l6,l30,10,o1,available
+007,repl,p6,l7,l11,11,,available
+008,pick,p7,l8,l32,14,o2,available
+009,load,p8,l30,l40,9,o1,available
+010,load,p9,l32,l41,10,o2,available
