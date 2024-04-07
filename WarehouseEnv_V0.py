@@ -8,13 +8,52 @@ class WarehouseEnv(gym.Env):
     This a custom enviorenment that follows gym interface.
     This is the V0 of a simple warehouse env for an agent. 
     
-    Designing a gym env means, designing a env so that an agent can use
-    rest(), step() kind of methods. An env is not a agent. env is the 
-    place where agents work (act on). 
+    Designing a gymnasium (gym) env means, designing an environment so that an agent can use:
+        reset() - reset the env to initial state and return the initial observation, 
+        step() - take an action and return the next observation, reward, done, info,
+        render() - visualize the env
+        sample() - generate a random sample observation  
+        close() - close the env and free the resources
+    kind of methods. 
+    
+    An env is not a agent. env is the place where agents work (act on). 
     
     So no internal agent level attributes should be retained in this env class.
 
-    Agent waits the relevent time steps of the tasks before taking on another task.
+    OBSERVATIONS:
+    ------------
+    An agent observes two things: The tasks and the devices. These should be in csv files and
+    should be loaded and then provided to __init()__ after encoding.
+    
+    Tasks:
+    task_id | type | product | from loc | to loc | time | order | status
+    --------|------|---------|----------|--------|------|-------|-------
+    0       | pick | 2       | 3        | 4      | 5    | 6     | available
+    1       | put  | 3       | 4        | 5      | 6    | 7     | active
+    2       | load | 4       | 5        | 6      | 7    | 8     | done
+    3       | repl | 5       | 6        | 7      | 8    | 9     | available
+    ....
+
+    Devices:
+    device_id | type          | status
+    ----------|---------------|-------
+    0         | pallet_jack   | 0
+    1         | forklift      | 1
+    2         | pallet_jack   | 0
+    ...
+
+    ACTIONS:
+    An agent should select a task (no need to learn to select a device, because it is simple given the task type). 
+    So the policy should be, an strategy to select a task given the above observation (which is Devices and Tasks).
+
+    Why we should give devices also as an observation? 
+        - Because, the agent should know the devices status.
+        - An Agent should learn to not to select tasks if no available devices (although there are available tasks).
+
+
+    ASSUMPTIONS:
+    -----------
+    1. An Warehouse Agent waits the relevent time steps of the tasks before taking on another task.
     by this, we can do some visualizations too.   
 
     """
@@ -56,17 +95,57 @@ class WarehouseEnv(gym.Env):
     # DEVICE TYPE
     PALLET_JACK = 0
     FORKLIFT = 1
+
+    def encode_tasks_and_devices(self, tasks, devices):
+        # encode the df
+        type_encoding = {"pick": self.PICK, "put": self.PUT, "load": self.LOAD, "repl": self.REPL} # encode "type"
+        tasks["type"] = tasks["type"].map(type_encoding)
+
+        tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product (remove the first character and get the number)
+        
+        tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc (remove the first character and get the number)
+        
+        tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc (remove the first character and get the number)
+        tasks.fillna({'order':'o1'}, inplace=True)  # encode to order (fill null values by o1, because in next line we are removing the first character)
+        
+        tasks["order"] = tasks["order"].apply(lambda order:  order[1:]) # encode to order (remove the first character and get the number)
+        
+        status_encoding = {"available": self.AVAILABLE, "active": self.ACTIVE, "done": self.DONE} # encode status
+        tasks["status"] = tasks["status"].map(status_encoding)
+
+        task_list = tasks.to_numpy().tolist()
+        task_list = [list( map(int,i) ) for i in task_list]
+
+        # encode devices
+        type_encodings = {"forklift": self.FORKLIFT,"pallet_jack": self.PALLET_JACK} # type encodings
+        devices["type"] = devices["type"].map(type_encodings)
+        status_encoding = {"available": self.AVAILABLE, "active": self.ACTIVE} # encode status
+        devices["status"] = devices["status"].map(status_encoding)
+
+        device_list = devices.to_numpy().tolist()
+
+        print("[encoding]: encoded task_list: ", task_list)
+        print("[encoding]: encoded device_list: ", device_list)
+
+        return task_list, device_list
+
+
    
-    def __init__(self, tasks=None, devices=None):
+    def __init__(self):
         super(WarehouseEnv, self).__init__()
 
         # The action of a agent is selecting a task_id to do.
         # So, action state can be a large number. That means the number of available tasks 
         # can be anything which will be provided in tasks list. 
 
-        # following are the observations that an agent will see from the env
-        self.tasks = np.array(tasks) # an observation
-        self.devices = np.array(devices) # an observation
+        # following are the observations that an agent will see from the env at the begining.
+        tasks = pd.read_csv('tasks.csv')
+        devices = pd.read_csv('devices.csv')
+
+        task_list, device_list = self.encode_tasks_and_devices(tasks, devices)
+
+        self.tasks = task_list # an observation
+        self.devices = device_list # an observation
 
         self.action_space = spaces.Discrete(len(tasks)); # assuming at a given time max number of actions is 100.
 
@@ -76,23 +155,23 @@ class WarehouseEnv(gym.Env):
         self.task_shape = (len(self.tasks), 8)  # Adjust if you have more task attributes
         self.task_low = np.array([[
             0,  # Task_Id (assume non-negative integers)
-            0,  # Type (might be categorical - see below)
+            0,  # Type (categorical)
             0,  # Product
             0,  # From Location
             0,  # To Location
             0,  # Time (might be a float)
             0,  # Order No
-            0   # Status (might be categorical - see below)
+            0   # Status (categorical)
         ] for _ in range(len(tasks))])
         self.task_high = np.array([[
-            100,  # Task_Id
-            4,  # Type (if categorical, maximum category value)
+            100,  # Task_Id, maximum task id
+            3,  # Task Type (if categorical, maximum category value). 3 since we start from 0. so there are four types
             100,  # Product
             100,  # From Location 
             100,  # To Location
             60,   # Time (if assuming a 24-hour window) 
             100,  # Order No
-            3   # Status 
+            2   # Status  (0 - available, 1 - active, 2 - done)
         ] for _ in range(len(tasks))])
 
         # Warehouse Devices
@@ -104,8 +183,8 @@ class WarehouseEnv(gym.Env):
         ] for _ in range(len(devices))])
         self.device_high = np.array([[
             100,  # Device_Id
-            2,  # Type
-            2  # Status
+            1,  # Type (0-pallet_jack, 1-forklift)
+            1  # Status (0-available, 1-active)
         ] for _ in range(len(devices))])
 
         # print(self.task_low)
@@ -136,40 +215,22 @@ class WarehouseEnv(gym.Env):
 
         # initialize observations
 
-        # Althouhg __init__() method received the tasks from the main method, here in
-        # reset() method we cannot relly on that. because after each iterations, the
-        # self.tasks will get updated. So it no longer will have the initial task list 
-        # which was supplied at begining. 
         tasks = pd.read_csv('tasks.csv')
+        devices = pd.read_csv('devices.csv')
 
-        # encode the df
-        type_encoding = {"pick": self.PICK, "put": self.PUT, "load": self.LOAD, "repl": self.REPL} # encode "type"
-        tasks["type"] = tasks["type"].map(type_encoding)
-        tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product
-        tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc
-        tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc
-        tasks.fillna({'order':'o1'}, inplace=True)  # encode to order
-        tasks["order"] = tasks["order"].apply(lambda order:  order[1:])     
-        status_encoding = {"available": self.AVAILABLE, "active": self.ACTIVE, "done": self.DONE} # encode status
-        tasks["status"] = tasks["status"].map(status_encoding)
+        # if number of devices is less than number of tasks, we need to increase the number of devices to match the number of tasks.
+        # make the new devices all not available and device id 99 
+        if len(devices) < len(tasks):
+            new_devices = pd.DataFrame([[99, 0, 1] for _ in range(len(tasks) - len(devices))], columns=["device_id", "type", "status"])
+            devices = pd.concat([devices, new_devices], ignore_index=True)
 
-        task_list = tasks.to_numpy().tolist()
-        task_list = [list( map(int,i) ) for i in task_list]
+
+        task_list, device_list = self.encode_tasks_and_devices(tasks, devices)
 
         
         self.tasks = task_list # Initialize or reset the task_list to its starting state. 
                                 # Likely, all tasks would have the status "Available".
         
-        
-        # Similarly Get devices from CSV itself
-        devices = pd.read_csv('devices.csv')
-      
-        type_encodings = {"forklift": self.FORKLIFT,"pallet_jack": self.PALLET_JACK} # type encodings
-        devices["type"] = devices["type"].map(type_encodings)
-        status_encoding = {"available": self.AVAILABLE, "active": self.ACTIVE} # encode status
-        devices["status"] = devices["status"].map(status_encoding)
-
-        device_list = devices.to_numpy().tolist()
         self.devices = device_list
 
         # the whole observation object:
@@ -188,14 +249,14 @@ class WarehouseEnv(gym.Env):
 
     def step(self, action, agent_type=HUMAN):
         # Here, an action will be a task_id and based on task status we can return a reward.
-        print("action:", action, "agent_type", agent_type)
+        print("action (task id):", action, "agent_type", agent_type)
 
         if action >= len(self.tasks):
             raise ValueError("Received a task id (as the action) grater than available number of tasks")
 
-        print("action number is a valid one")
-        print(self.tasks[1][7])
-        print(self.AVAILABLE)
+        print(f"received action {action} is a valid action number.")
+        print(self.tasks[action][self.TASK_STATUS])
+        # print(self.AVAILABLE)
 
 
         # REWARD CALCULATION
@@ -220,13 +281,15 @@ class WarehouseEnv(gym.Env):
                         # make the task active
                         self.tasks[action][self.TASK_STATUS] = self.ACTIVE
 
-                        # make that pallet status as active (the first pj which is available)
+                        # make that pallet jack status as active (the first pj which is available)
                         for index, device in enumerate(self.devices):
                             if device[self.DEVICE_TYPE] == self.PALLET_JACK and device[self.DEVICE_STATUS] == self.AVAILABLE:
                                 self.devices[index][self.DEVICE_STATUS] = self.ACTIVE
                                 break
                     else:
                         reward = -1 # punish if no available pallet jacks
+                        # Agent should learn to not to select tasks if no available devices (although there are available tasks)
+                    
                 else: #every other task types needs a forklift 
                     print("in human reward calculation 3")
                     forklifts = [device for device in self.devices if device[self.DEVICE_TYPE] == self.FORKLIFT]
@@ -247,6 +310,8 @@ class WarehouseEnv(gym.Env):
                                 break
                     else:
                         reward = -1 # punish if no available pallet jacks
+                        # This is because the agent should learn to not to select tasks if no available devices 
+                        # (although there are available tasks)
                     print("in human reward calculation 3.3")
 
             else: # robots can only do pick tasks and they dont need any devices for that. 
@@ -278,7 +343,12 @@ class WarehouseEnv(gym.Env):
         # INFO?
         info = {}
 
-        return self.tasks, reward, done, truncated, info
+        observation = {
+            "tasks": self.tasks,
+            "devices": self.devices
+        }
+
+        return observation, reward, done, truncated, info
     
 
     def render(self, mode='console'):
@@ -291,81 +361,81 @@ class WarehouseEnv(gym.Env):
 
 
 
-tasks = pd.read_csv('tasks.csv')
-devices = pd.read_csv('devices.csv')
-tasks.head()
+# tasks = pd.read_csv('tasks.csv')
+# devices = pd.read_csv('devices.csv')
+# tasks.head()
 
-# encode "type"
-type_encoding = {
-    "pick": 0,
-    "put": 1,
-    "load": 2,
-    "repl": 3
-}
-tasks["type"] = tasks["type"].map(type_encoding)
+# # encode "type"
+# type_encoding = {
+#     "pick": 0,
+#     "put": 1,
+#     "load": 2,
+#     "repl": 3
+# }
+# tasks["type"] = tasks["type"].map(type_encoding)
 
-tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product
-tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc
-tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc
+# tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product
+# tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc
+# tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc
 
-tasks.fillna({'order':'o0'}, inplace=True)  # encode to order
-tasks["order"] = tasks["order"].apply(lambda order:  order[1:])
-
-
-# encode status
-status_encoding = {
-    "available": 0,
-    "active": 1,
-    "done": 2,
-}
-tasks["status"] = tasks["status"].map(status_encoding)
-
-tasks.head()
-
-task_list = tasks.to_numpy().tolist()
-task_list = [list( map(int,i) ) for i in task_list]
-print(task_list)
-
-devices = pd.read_csv('devices.csv')
-# devices.head()
-
-# type encodings
-type_encodings = {
-    "forklift": 1,
-    "pallet_jack": 0
-}
-devices["type"] = devices["type"].map(type_encodings)
-
-# encode status
-status_encoding = {
-    "available": 0,
-    "active": 1,
-}
-devices["status"] = devices["status"].map(status_encoding)
-
-device_list = devices.to_numpy().tolist()
-print(device_list)
-
-devices.head(10)
-
-env = WarehouseEnv(tasks=task_list, devices=device_list)
-print("env taskssss===")
-print(env.tasks)
-print(env.devices)
-
-print(env.observation_space)
-
-print("a sampleeeee: ")
-print(env.sample())
-
-print("reseting ======")
-print(env.reset())
+# tasks.fillna({'order':'o0'}, inplace=True)  # encode to order
+# tasks["order"] = tasks["order"].apply(lambda order:  order[1:])
 
 
-print("action space")
-print(env.action_space)
-print(env.action_space.sample())
+# # encode status
+# status_encoding = {
+#     "available": 0,
+#     "active": 1,
+#     "done": 2,
+# }
+# tasks["status"] = tasks["status"].map(status_encoding)
 
-print("take a action to select task 1 by a human====")
-print(env.step(1, env.HUMAN))
+# tasks.head()
+
+# task_list = tasks.to_numpy().tolist()
+# task_list = [list( map(int,i) ) for i in task_list]
+# print(task_list)
+
+# devices = pd.read_csv('devices.csv')
+# # devices.head()
+
+# # type encodings
+# type_encodings = {
+#     "pallet_jack": 0,
+#     "forklift": 1
+# }
+# devices["type"] = devices["type"].map(type_encodings)
+
+# # encode status
+# status_encoding = {
+#     "available": 0,
+#     "active": 1,
+# }
+# devices["status"] = devices["status"].map(status_encoding)
+
+# device_list = devices.to_numpy().tolist()
+# print(device_list)
+
+# devices.head(10)
+
+# env = WarehouseEnv()
+# print("env taskssss===")
+# print(env.tasks)
+# print(env.devices)
+
+# print(env.observation_space)
+
+# print("a sampleeeee: ")
+# print(env.sample())
+
+# print("reseting ======")
+# print(env.reset())
+
+
+# print("action space")
+# print(env.action_space)
+# print(env.action_space.sample())
+
+# print("take a action to select task 1 by a human====")
+# print(env.step(1, env.HUMAN))
         

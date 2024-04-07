@@ -22,6 +22,11 @@ class RandomAgent:
 #######################################################
 tasks = pd.read_csv('tasks.csv')
 devices = pd.read_csv('devices.csv')
+
+# A dataframe to store the task started time, who did it and when it is done
+# this will be used to create a report and visualize the performance of the agents
+task_report = pd.DataFrame(columns=["task_id", "device_id", "start_time", "end_time"])
+
 tasks.head()
 
 # encode "type"
@@ -33,11 +38,11 @@ type_encoding = {
 }
 tasks["type"] = tasks["type"].map(type_encoding)
 
-tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product
+tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product (remove the first character and get the number)
 tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc
 tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc
 
-tasks.fillna({'order':'o0'}, inplace=True)  # encode to order
+tasks.fillna({'order':'o0'}, inplace=True)  # encode to order (fill null values by o0, because in next line we are removing the first character)
 tasks["order"] = tasks["order"].apply(lambda order:  order[1:])
 
 
