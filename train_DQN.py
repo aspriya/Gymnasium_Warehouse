@@ -1,5 +1,6 @@
 import tensorflow as tf
 import gymnasium as gym
+from tensorflow.keras import layers
 from tensorflow.keras.layers import Dense, Input, Conv2D, Concatenate, Reshape
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.models import Model, Sequential # here we use functional API (not sequential)
@@ -82,6 +83,12 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
         return map(np.array, zip(*batch)) 
 
+
+class TensorFlowSizeLayer(layers.Layer):
+    def call(self, inputs):
+      return tf.size(inputs, out_type=tf.int32)
+
+
 # Create the DQN model
 def create_dqn(tasks_shape, devices_shape, num_actions):
     print('\n==>[creating DQN model]: tasks_shape:', tasks_shape, 'devices_shape:', devices_shape, 'num_actions:', num_actions, '\n')
@@ -128,9 +135,19 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     x = Dense(32, activation='relu')(combined) 
 
     # ------------------
+    # One layer after the combined decision layers
+    # ------------------
+    x1 = Dense(16, activation='relu')(x)
+
+    # ------------------
+    # Flatten the combined input before the output layer
+    # ------------------
+    flattened_x1 = Reshape((1, 160))(x1)  # Flatten the input for the output layer
+
+    # ------------------
     # Output Layers (Adjust to match your number of tasks)
     # ------------------
-    task_output = Dense(num_actions, activation='linear')(x)  # Output for task selection (number of neurons = number of tasks)
+    task_output = Dense(num_actions, activation='linear')(flattened_x1)  # Output for task selection (number of neurons = number of tasks)
 
     # ------------------
     # Instantiate the Model
@@ -154,10 +171,10 @@ target_dqn.set_weights(dqn.get_weights())  # Initialize target network with same
 buffer = ReplayBuffer(50000) # Initialize replay buffer with capacity of 50,000 experience samples
 optimizer = Adam()
 gamma = 0.99  # Discount factor for future rewards
-batch_size = 64  
+batch_size = 10
 
 # Training loop
-for episode in range(500):
+for episode in range(1):
     (state, info) = env.reset()
     done = False
     total_reward = 0
@@ -176,7 +193,8 @@ for episode in range(500):
             states, actions, rewards, next_states, dones = buffer.sample(batch_size)
 
             # print('\n====>[Training]: states:', states, 'actions:', actions, 'rewards:', rewards, 'next_states:', next_states, 'dones:', dones, '\n')
-            print("len(states):", len(states), "len(actions):", len(actions), "len(rewards):", len(rewards), "len(next_states):", len(next_states), "len(dones):", len(dones))
+            print("\nlen(states):", len(states), ",len(actions):", len(actions), ",len(rewards):", len(rewards), ",len(next_states):", len(next_states), ",len(dones):", len(dones))
+            print("actions[0]:", actions)
             
             # get a batch of tasks and devices
             tasks = [[sublist for sublist in element['tasks']] for element in states]
@@ -186,8 +204,9 @@ for episode in range(500):
             next_tasks = [[sublist for sublist in element['tasks']] for element in next_states]
             next_devices = [[sublist for sublist in element['devices']] for element in next_states]
 
+            print("\n===> the first observation in the selected batch from experiances for training =====>")
             print("tasks[0]:", tasks[0])
-            print("devices[0]:", devices[0])
+            print("\ndevices[0]:", devices[0])
 
             # Convert to TensorFlow tensors
             tasks_tensor = tf.convert_to_tensor(tasks, dtype=tf.float32)  # Specify float32 for common use 
@@ -196,16 +215,34 @@ for episode in range(500):
             next_tasks_tensor = tf.convert_to_tensor(next_tasks, dtype=tf.float32)
             next_devices_tensor = tf.convert_to_tensor(next_devices, dtype=tf.float32)
 
-            # Calculate targets using target network
-            targets = dqn([tasks_tensor,devices_tensor])  # Initialize targets with current Q-values
-            next_q_values = target_dqn([next_tasks_tensor, next_devices_tensor])
-            max_next_q_values = np.max(next_q_values, axis=1)
-            targets[range(batch_size), actions] = rewards + (1 - dones) * gamma * max_next_q_values
+            # Calculate Q-values from the main network
+            q_values_from_main_network = dqn([tasks_tensor,devices_tensor])  # Initialize targets with current Q-values (shape is: batch_size, 1, 10)
+            q_values_from_main_network = tf.reshape(q_values_from_main_network, (batch_size, 10)) # Reshaping the EagerTensor
+            print("\n===> Q values from main network by passing a batch of experiances: =====>\n")
+            print(q_values_from_main_network[0])
+            print(q_values_from_main_network[1][7])
+
+            # Get Q-values from target network
+            q_values_from_target_network = target_dqn([next_tasks_tensor, next_devices_tensor])
+            q_values_from_target_network = tf.reshape(q_values_from_target_network, (batch_size, 10)) # Reshaping the EagerTensor
+            print("\n===> Q values from target network by passing a batch of experiances: =====>\n")
+            print(q_values_from_target_network[1])
+
+            # Calculate the maximum Q-values of the next states (from the target network)
+            max_q_values_of_next_states = np.max(q_values_from_target_network, axis=1)
+            print("\n===> Max Q values from target network by passing a batch of experiances: =====>\n")
+            print(max_q_values_of_next_states)
+
+            # Calculate the expected future rewards
+            real_expected_future_rewards = q_values_from_main_network.numpy()  # Initialize with current Q-values from main network and convert to numpy array
+            real_expected_future_rewards[range(batch_size), actions] = rewards + (1 - dones) * gamma * max_q_values_of_next_states
+            print("\n===> Q values from main network, after updating the taken action with real expected future reward: =====>\n")
+            print(real_expected_future_rewards)
 
             # Train the DQN
             with tf.GradientTape() as tape:
-                q_values = dqn(states['tasks'])(states['devices'])
-                loss = tf.keras.losses.mean_squared_error(targets, q_values)
+                q_values = dqn([tasks_tensor, devices_tensor])
+                loss = tf.keras.losses.mean_squared_error(real_expected_future_rewards, q_values)
             grads = tape.gradient(loss, dqn.trainable_variables)
             optimizer.apply_gradients(zip(grads, dqn.trainable_variables))
 
