@@ -35,11 +35,11 @@ class WarehouseEnv(gym.Env):
     ....
 
     Devices:
-    device_id | type          | status
-    ----------|---------------|-------
-    0         | pallet_jack   | 0
-    1         | forklift      | 1
-    2         | pallet_jack   | 0
+    device_id | type          | status  | current_task_id
+    ----------|---------------|---------|----------------
+    0         | pallet_jack   | 0       | NULL
+    1         | forklift      | 1       | NULL
+    2         | pallet_jack   | 0       | NULL
     ...
 
     ACTIONS:
@@ -63,8 +63,6 @@ class WarehouseEnv(gym.Env):
     # Define constants for clear code
     REST = 0
     ACTIVE = 1
-    HUMAN = 0
-    ROBOT = 1
 
     #task_list_columns
     TASK_ID = 0
@@ -91,14 +89,28 @@ class WarehouseEnv(gym.Env):
     DEVICE_ID = 0
     DEVICE_TYPE = 1
     DEVICE_STATUS = 2
+    DEVICE_CURRENT_TASK_ID = 3
 
     # DEVICE TYPE
     PALLET_JACK = 0
     FORKLIFT = 1
     NOT_A_DEVICE = 2
 
+    # agent_columns
+    AGENT_ID = 0
+    AGENT_TYPE = 1
+    AGENT_STATUS = 2
+
+    # agent type encodings
+    HUMAN = 0
+    ROBOT = 1
+
+    # agent status encodings
+    AGENT_AVAILABLE = 0
+    AGENT_ACTIVE = 1
+
     def encode_tasks_and_devices(self, tasks, devices):
-        # encode the df
+        # encode the tasks df
         type_encoding = {"pick": self.PICK, "put": self.PUT, "load": self.LOAD, "repl": self.REPL} # encode "type"
         tasks["type"] = tasks["type"].map(type_encoding)
 
@@ -120,10 +132,12 @@ class WarehouseEnv(gym.Env):
         # encode devices
         type_encodings = {"forklift": self.FORKLIFT,"pallet_jack": self.PALLET_JACK, "not_a_device": self.NOT_A_DEVICE} # type encodings
         devices["type"] = devices["type"].map(type_encodings)
+        
         status_encoding = {"available": self.AVAILABLE, "active": self.ACTIVE} # encode status
         devices["status"] = devices["status"].map(status_encoding)
 
         device_list = devices.to_numpy().tolist()
+        device_list = [list( map(int,i) ) for i in device_list]
 
         print("[encoding]: encoded task_list: ", task_list)
         print("[encoding]: encoded device_list: ", device_list)
@@ -180,12 +194,14 @@ class WarehouseEnv(gym.Env):
         self.device_low = np.array([[
             0,  # Device_Id
             0,  # Type 
-            0   # Status
+            0,   # Status
+            0, # current_task_id
         ] for _ in range(len(devices))])
         self.device_high = np.array([[
             100,  # Device_Id
             2,  # Type (0-pallet_jack, 1-forklift, 2-not_a_device)
-            1  # Status (0-available, 1-active)
+            1,  # Status (0-available, 1-active)
+            999 # current_task_id (999 means no task assigned)
         ] for _ in range(len(devices))])
 
         # print(self.task_low)
@@ -222,10 +238,10 @@ class WarehouseEnv(gym.Env):
         # if number of devices is less than number of tasks, we need to increase the number of devices to match the number of tasks.
         # make the new devices all not available and device id 99 
         if len(devices) < len(tasks):
-            new_devices = pd.DataFrame([[99, 'not_a_device', 'active'] for _ in range(len(tasks) - len(devices))], columns=["device_id", "type", "status"])
+            new_devices = pd.DataFrame([[99, 'not_a_device', 'active', 999] for _ in range(len(tasks) - len(devices))], columns=["device_id", "type", "status", "current_task_id"])
             devices = pd.concat([devices, new_devices], ignore_index=True)
 
-        print("==>[from env]: devices: ", devices)
+        print("==>[from env - reset]: devices: ", devices)
 
         task_list, device_list = self.encode_tasks_and_devices(tasks, devices)
 
@@ -249,86 +265,89 @@ class WarehouseEnv(gym.Env):
         return (observation, info)
 
 
-    def step(self, action, agent_type=HUMAN):
+    def step(self, action_index, agent_type=HUMAN):
+        action = action_index + 1
         # Here, an action will be a task_id and based on task status we can return a reward.
-        print("=======> [from env]: action (task id):", action, "agent_type", agent_type)
+        print("=======> [from env - step]: action (task id):", action, "agent_type", agent_type)
 
-        if action >= len(self.tasks):
+        if action > len(self.tasks):
             raise ValueError("=======> [from env]: Received a task id (as the action) grater than available number of tasks")
 
-        print(f"=======> [from env]: received action {action} is a valid action number.")
-        print("=======> [from env]: status of that task (action): ", self.tasks[action][self.TASK_STATUS])
+        print(f"=======> [from env - step]: received action {action} is a valid action number.")
+        print("=======> [from env - step]: status of that task (action): ", self.tasks[action_index][self.TASK_STATUS])
         # print(self.AVAILABLE)
 
 
         # REWARD CALCULATION
         # Punish if the selected task is alreay active (Assigned) or completed (done)
-        if self.tasks[action][self.TASK_STATUS] != self.AVAILABLE:
+        if self.tasks[action_index][self.TASK_STATUS] != self.AVAILABLE:
             reward = -1
         else:
             # if agent is human
             if agent_type == self.HUMAN:
 
-                print("=======> [from env]: in human reward calculation 1")
+                print("=======> [from env - step]: in human reward calculation 1")
 
                 # if task is a pick, a pallet_jack is needed. 
-                if self.tasks[action][self.TASK_TYPE] == self.PICK:
-                    print("=======> [from env]: task is a pick task")
+                if self.tasks[action_index][self.TASK_TYPE] == self.PICK:
+                    print("=======> [from env - step]: task is a pick task")
                     pallet_jacks = [device for device in self.devices if device[self.DEVICE_TYPE] == self.PALLET_JACK]
                     num_available_pallet_jacks = len([pj for pj in pallet_jacks if pj[self.DEVICE_STATUS] == self.AVAILABLE])
 
-                    print("=======> [from env]: number of available pallet jacks: ", num_available_pallet_jacks)
+                    print("=======> [from env - step]: number of available pallet jacks: ", num_available_pallet_jacks)
 
                     if num_available_pallet_jacks > 0:
                         reward = 1
 
                         # make the task active
-                        self.tasks[action][self.TASK_STATUS] = self.ACTIVE
+                        self.tasks[action_index][self.TASK_STATUS] = self.ACTIVE
 
                         # make that pallet jack status as active (the first pj which is available)
                         for index, device in enumerate(self.devices):
                             if device[self.DEVICE_TYPE] == self.PALLET_JACK and device[self.DEVICE_STATUS] == self.AVAILABLE:
                                 self.devices[index][self.DEVICE_STATUS] = self.ACTIVE
+                                self.devices[index][self.DEVICE_CURRENT_TASK_ID] = action
                                 break
                     else:
                         reward = -1 # punish if no available pallet jacks
                         # Agent should learn to not to select tasks if no available devices (although there are available tasks)
                     
                 else: #every other task types needs a forklift 
-                    print("=======> [from env]: task is a forklift task")
+                    print("=======> [from env - step]: task is a forklift task")
                     forklifts = [device for device in self.devices if device[self.DEVICE_TYPE] == self.FORKLIFT]
                     num_available_forklifts = len([fk for fk in forklifts if fk[self.DEVICE_STATUS] == self.AVAILABLE])
 
-                    print("=======> [from env]: number of available forklifts: ", num_available_forklifts)
+                    print("=======> [from env - step]: number of available forklifts: ", num_available_forklifts)
 
                     if num_available_forklifts > 0:
                         reward = 1
 
                         # make the task active
-                        self.tasks[action][self.TASK_STATUS] = self.ACTIVE
+                        self.tasks[action_index][self.TASK_STATUS] = self.ACTIVE
 
                         # make that forklift status as active (the first fk which is available)
                         for index, device in enumerate(self.devices):
                             if device[self.DEVICE_TYPE] == self.FORKLIFT and device[self.DEVICE_STATUS] == self.AVAILABLE:
                                 self.devices[index][self.DEVICE_STATUS] = self.ACTIVE
+                                self.devices[index][self.DEVICE_CURRENT_TASK_ID] = action
                                 break
                     else:
                         reward = -1 # punish if no available pallet jacks
                         # This is because the agent should learn to not to select tasks if no available devices 
                         # (although there are available tasks)
-                    print("=======> [from env]: reward: ", reward)
+                    print("=======> [from env - step]: reward: ", reward)
 
             else: # robots can only do pick tasks and they dont need any devices for that. 
 
-                if self.tasks[action][self.TASK_TYPE] != self.PICK: # if the task type is not a pick task, punish
+                if self.tasks[action_index][self.TASK_TYPE] != self.PICK: # if the task type is not a pick task, punish
                     reward = -1
                 else: 
                     reward = 1
                     
                     # make the task to active status
-                    self.tasks[action][self.TASK_STATUS] = self.ACTIVE
+                    self.tasks[action_index][self.TASK_STATUS] = self.ACTIVE
 
-        print("=======> [from env]: reward: ", reward)
+        print("=======> [from env - step]: reward: ", reward)
         # DONE?
         num_available_tasks = len([task for task in self.tasks if task[self.TASK_STATUS] == self.AVAILABLE])
         if num_available_tasks > 0:
@@ -336,13 +355,13 @@ class WarehouseEnv(gym.Env):
         else:
             done = True
 
-        print("=======> [from env]: after this, num_available_tasks: ", num_available_tasks)
-        print("=======> [from env]: done: ", done)
+        print("=======> [from env - step]: after this, num_available_tasks: ", num_available_tasks)
+        print("=======> [from env - step]: done: ", done)
 
         # TRUNCATED?
         truncated = False
 
-        print("truncated: ", truncated)
+        print("=======> [from env - step]: truncated: ", truncated)
         
 
         # INFO?
@@ -361,6 +380,13 @@ class WarehouseEnv(gym.Env):
     
     def close(self):
         pass
+
+    def get_observation(self):
+        return {
+            "tasks": self.tasks,
+            "devices": self.devices
+        }
+    
 
 
 
