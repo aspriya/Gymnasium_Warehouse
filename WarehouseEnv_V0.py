@@ -2,6 +2,10 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import pandas as pd
+import random
+import pygame
+import sys
+
 
 class WarehouseEnv(gym.Env):
     """
@@ -109,6 +113,41 @@ class WarehouseEnv(gym.Env):
     AGENT_AVAILABLE = 0
     AGENT_ACTIVE = 1
 
+    # pygame width, height and other attributes
+    WIDTH = 1024
+    HEIGHT = 768
+
+    DEVICES_DEFAULT_LOCATION_START_Y = 10
+    DEVICES_DEFAULT_LOCATION_START_X = 10
+
+    AGENTS_DEFAULT_LOCATION_START_Y = 70
+    AGENTS_DEFAULT_LOCATION_START_X = 10
+    
+    LOCATIONS_LEFT_START_Y = HEIGHT / 6 # 768/6 = 128
+    LOCATIONS_LEFT_START_X = WIDTH / 8 # 1024/8 = 128
+
+    LOCATIONS_RIGHT_START_Y = LOCATIONS_LEFT_START_Y
+    LOCATIONS_RIGHT_START_X = WIDTH - LOCATIONS_LEFT_START_X - 50
+
+    LOCATIONS_SPAN_X = LOCATIONS_RIGHT_START_X - LOCATIONS_LEFT_START_X
+
+    WORKER_WIDTH = 25
+    WORKER_HEIGHT = 40
+
+    ROBOT_WIDTH = 40
+    ROBOT_HEIGHT = 40
+
+    SPACE_BETWEEN_AGENTS = 5
+
+    FORKLIFT_WIDTH = 40
+    FORKLIFT_HEIGHT = 40
+
+    PALLET_JACK_WIDTH = 40
+    PALLET_JACK_HEIGHT = 40
+
+    LOCATION_WIDTH = 50
+    LOCATION_HEIGHT = 50
+
     def encode_tasks_and_devices(self, tasks, devices):
         # encode the tasks df
         type_encoding = {"pick": self.PICK, "put": self.PUT, "load": self.LOAD, "repl": self.REPL} # encode "type"
@@ -149,23 +188,133 @@ class WarehouseEnv(gym.Env):
     def __init__(self):
         super(WarehouseEnv, self).__init__()
 
+        self.time_step = 0 # starting time step of the env
+        # Make sure that in the step() method, call render() if only time_step increased. 
+
         # The action of a agent is selecting a task_id to do.
         # So, action state can be a large number. That means the number of available tasks 
         # can be anything which will be provided in tasks list. 
 
+        # initialize Pygame
+        pygame.init()
+        self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+
+        # read the tasks and devices from csv files
+        tasks_df = pd.read_csv('tasks.csv')
+        devices_df = pd.read_csv('devices.csv')
+
+
+        # encode the tasks and devices
+        task_list, device_list = self.encode_tasks_and_devices(tasks_df, devices_df)
+
         # following are the observations that an agent will see from the env at the begining.
-        tasks = pd.read_csv('tasks.csv')
-        devices = pd.read_csv('devices.csv')
-
-        task_list, device_list = self.encode_tasks_and_devices(tasks, devices)
-
         self.tasks = task_list # an observation
         self.devices = device_list # an observation
 
-        self.action_space = spaces.Discrete(len(tasks)); # assuming at a given time max number of actions is 100.
+        self.action_space = spaces.Discrete(len(tasks_df)); # assuming at a given time max number of actions is 100.
 
-        # OBSERVATIONS FROM ENV ARE: warehouse tasks, devices
+        ####################################
+        #### Rendering Related Details #####
+        ####################################
+        # For rendering, its easier maintain live warehoue activities, agent and device default locations in data frames like below
+        agents = pd.read_csv('agents.csv')
         
+        agent_type_encodings = {"human": self.HUMAN, "robot": self.ROBOT}
+        agents["type"] = agents["type"].map(agent_type_encodings)
+
+        agent_status_encoding = {"available": self.AGENT_AVAILABLE, "active": self.AGENT_ACTIVE}
+        agents["status"] = agents["status"].map(agent_status_encoding)
+
+        self.agents = agents
+
+        # calculate agent default locations
+        agent_locations = pd.DataFrame(columns=['agent_id', 'type', 'default_loc_X', 'default_loc_Y', 'top_left_X', 'top_left_Y'])
+        for index, agent in agents.iterrows():
+            agent_id = agent['agent_id']
+            agent_type = agent['type']
+
+            top_left_X = self.AGENTS_DEFAULT_LOCATION_START_X + \
+            (index * (self.WORKER_WIDTH + self.SPACE_BETWEEN_AGENTS) if agent['type'] == self.HUMAN \
+             else (index * (self.ROBOT_WIDTH + self.SPACE_BETWEEN_AGENTS)))
+            
+            top_left_Y = self.AGENTS_DEFAULT_LOCATION_START_Y
+
+            # construct a df and concat it with agent_locations
+            # at the begining, the default location and the top_left location are the same
+            locations_rec = pd.DataFrame([[agent_id, agent_type, top_left_X, top_left_Y, top_left_X, top_left_Y]], columns=agent_locations.columns)
+            agent_locations = pd.concat([agent_locations, locations_rec], ignore_index=True)
+
+        self.agent_locations = agent_locations
+
+        # calculate device default locations
+        device_locations = pd.DataFrame(columns=['device_id', 'type', 'default_loc_X', 'default_loc_Y', 'top_left_X', 'top_left_Y'])
+        for index, device in devices_df.iterrows():
+            device_id = device['device_id']
+            device_type = device['type']
+
+            top_left_X = self.DEVICES_DEFAULT_LOCATION_START_X + \
+            (index * (self.FORKLIFT_WIDTH + self.SPACE_BETWEEN_AGENTS) if device['type'] == self.FORKLIFT \
+             else (index * (self.PALLET_JACK_WIDTH + self.SPACE_BETWEEN_AGENTS)))
+            
+            top_left_Y = self.DEVICES_DEFAULT_LOCATION_START_Y
+
+            # construct a df and concat it with device_locations
+            # at the begining, the default location and the top_left location are the same
+            locations_rec = pd.DataFrame([[device_id, device_type, top_left_X, top_left_Y, top_left_X, top_left_Y]], columns=device_locations.columns)
+            device_locations = pd.concat([device_locations, locations_rec], ignore_index=True)
+        
+        self.device_locations = device_locations
+        
+        # The live locations of agents and devices
+        warehouse_now = pd.DataFrame(columns=['agent_id', 'task_id', 'device_id', 'agent_loc', 'device_loc'])
+        for index, agent in agents.iterrows():
+            agent_id = agent['agent_id']
+            task_id = None
+            device_id = None
+            agent_loc = agent_locations[agent_locations['agent_id'] == agent_id]
+            device_loc = None
+            
+            # construct a df and concat it with warehouse_now
+            locations_rec = pd.DataFrame([[agent_id, task_id, device_id, agent_loc, device_loc]], columns=warehouse_now.columns)
+            warehouse_now = pd.concat([warehouse_now, locations_rec], ignore_index=True)
+        
+        self.warehoue_now = warehouse_now 
+
+
+        # getting all different shelf locations based on provided task list (tasks.csv)
+        locations = [task[self.TASK_FROM_LOC] for task in self.tasks]
+        locations.extend([task[self.TASK_TO_LOC] for task in self.tasks])
+        locations = list(set(locations)) # remove duplicates and get unique locations
+        locations.sort() # sort the locations
+        self.locations = locations
+
+        # left locations are odd numbers and right locations are even numbers
+        locations_left = [loc for loc in locations if loc % 2 != 0]
+        locations_right = [loc for loc in locations if loc % 2 == 0]
+        self.locations_left = locations_left
+        self.locations_right = locations_right
+
+        # shelf locations
+        shelf_locations = pd.DataFrame(columns=['location_id', 'X', 'Y', 'left_or_right'])
+        for index, loc in enumerate(locations):
+            if loc % 2 != 0:
+                x = self.LOCATIONS_LEFT_START_X
+                y = self.LOCATIONS_LEFT_START_Y + (index * self.LOCATION_HEIGHT)
+                left_or_right = 'left'
+            else:
+                x = self.LOCATIONS_RIGHT_START_X
+                y = self.LOCATIONS_RIGHT_START_Y + (index * self.LOCATION_HEIGHT)
+                left_or_right = 'right'
+            
+            self_location_rec = pd.DataFrame([[loc, x, y, left_or_right]], columns=shelf_locations.columns)
+            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
+        
+        self.shelf_locations = shelf_locations      
+
+        ####################################
+        ####     OBSERVATION SPACE     #####
+        ####################################
+        # OBSERVATIONS FROM ENV ARE: warehouse tasks, devices
         # Warehouse Tasks
         self.task_shape = (len(self.tasks), 8)  # Adjust if you have more task attributes
         self.task_low = np.array([[
@@ -177,7 +326,7 @@ class WarehouseEnv(gym.Env):
             0,  # Time (might be a float)
             0,  # Order No
             0   # Status (categorical)
-        ] for _ in range(len(tasks))])
+        ] for _ in range(len(tasks_df))])
         self.task_high = np.array([[
             100,  # Task_Id, maximum task id
             3,  # Task Type (if categorical, maximum category value). 3 since we start from 0. so there are four types
@@ -187,7 +336,7 @@ class WarehouseEnv(gym.Env):
             60,   # Time (if assuming a 24-hour window) 
             100,  # Order No
             2   # Status  (0 - available, 1 - active, 2 - done)
-        ] for _ in range(len(tasks))])
+        ] for _ in range(len(tasks_df))])
 
         # Warehouse Devices
         self.device_shape = (len(self.devices),3)  # Adjust if you have more device attributes
@@ -196,13 +345,13 @@ class WarehouseEnv(gym.Env):
             0,  # Type 
             0,   # Status
             0, # current_task_id
-        ] for _ in range(len(devices))])
+        ] for _ in range(len(devices_df))])
         self.device_high = np.array([[
             100,  # Device_Id
             2,  # Type (0-pallet_jack, 1-forklift, 2-not_a_device)
             1,  # Status (0-available, 1-active)
             999 # current_task_id (999 means no task assigned)
-        ] for _ in range(len(devices))])
+        ] for _ in range(len(devices_df))])
 
         # print(self.task_low)
 
@@ -265,17 +414,80 @@ class WarehouseEnv(gym.Env):
         return (observation, info)
 
 
-    def step(self, action_index, agent_type=HUMAN):
+    def step(self, agent, action_index, time_step=0):
         action = action_index + 1
+        agent_type = self.agents.query(f'agent_id == {agent}')['type'].values[0]
+        agent_type_str = "human" if agent_type == self.HUMAN else "robot" 
+        agent_status = self.agents.query(f'agent_id == {agent}')['status'].values[0] 
+        agent_current_task = self.agents.query(f'agent_id == {agent}')['current_task'].values[0]
+        agent_current_task_start_time = self.agents.query(f'agent_id == {agent}')['current_task_start_time'].values[0]
+        agent_current_device = self.agents.query(f'agent_id == {agent}')['current_device'].values[0]
+
+        task_status_str = "available" if self.tasks[action_index][self.TASK_STATUS] == self.AVAILABLE else "active"
+
         # Here, an action will be a task_id and based on task status we can return a reward.
-        print("=======> [from env - step]: action (task id):", action, "agent_type", agent_type)
+        print(f"\n=======> [from env - step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} at Time Step: {time_step}")
 
         if action > len(self.tasks):
-            raise ValueError("=======> [from env]: Received a task id (as the action) grater than available number of tasks")
+            raise ValueError("=======> [from env]: Received a task id (as the action) is grater than available number of tasks")
 
-        print(f"=======> [from env - step]: received action {action} is a valid action number.")
-        print("=======> [from env - step]: status of that task (action): ", self.tasks[action_index][self.TASK_STATUS])
+        print("=======> [from env - step]: status of the chosen task (action) is: ", task_status_str)
         # print(self.AVAILABLE)
+
+        # check if agent is still active (doing a task)
+        if agent_status == self.ACTIVE:
+
+            # if agent is still active and have more time to complete the task, pass
+            if time_step <= agent_current_task_start_time + self.tasks[agent_current_task - 1][self.TASK_TIME]:
+                print(f"=======> [from env - step]: agent is still active doing task {agent_current_task}, hence skipping to next agent")
+                
+                # update agent location (decide based on current time step, task from location and task to location)
+                task_duration = self.tasks[agent_current_task - 1][self.TASK_TIME]
+                task_from_loc = self.tasks[agent_current_task - 1][self.TASK_FROM_LOC]
+                task_from_loc_X = self.shelf_locations.query(f'location_id == {task_from_loc}')['X'].values[0]
+                task_from_loc_Y = self.shelf_locations.query(f'location_id == {task_from_loc}')['Y'].values[0]
+
+                task_to_loc = self.tasks[agent_current_task - 1][self.TASK_TO_LOC]
+                task_to_loc_X = self.shelf_locations.query(f'location_id == {task_to_loc}')['X'].values[0]
+                task_to_loc_Y = self.shelf_locations.query(f'location_id == {task_to_loc}')['Y'].values[0]
+
+                # distance to be covered by the agent in each time step
+                X_distance_per_time_step = (task_to_loc_X - task_from_loc_X) / task_duration
+                Y_distance_per_time_step = (task_to_loc_Y - task_from_loc_Y) / task_duration
+
+                from_location_type = self.shelf_locations.query(f'location_id == {task_from_loc}')['left_or_right'].values[0]
+
+                # Hence based on agent_current_task_start_time, time_step, task_duration, diagonal_distance, 
+                # task_from_loc_X, task_from_loc_Y, task_to_loc_X, task_to_loc_Y, X_distance_per_time_step and
+                # Y_distance_per_time_step, the X coordinate and Y coordinate of the agent at this moment is:
+                if from_location_type == 'left':
+                    agent_X = task_from_loc_X + (X_distance_per_time_step * (time_step - agent_current_task_start_time))
+                    agent_Y = task_from_loc_Y + (Y_distance_per_time_step * (time_step - agent_current_task_start_time))
+                else:
+                    agent_X = task_from_loc_X - (X_distance_per_time_step * (time_step - agent_current_task_start_time))
+                    agent_Y = task_from_loc_Y - (Y_distance_per_time_step * (time_step - agent_current_task_start_time))
+
+                self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_X'] = agent_X
+                self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_Y'] = agent_Y
+                
+                reward = 0
+            else: # if agent is done with the task, make agent free
+                print(f"=======> [from env - step]: agent is finishing the task {agent_current_task} at time step {time_step}")
+
+                # make the agent free
+                self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
+                self.agents.loc[self.agents['agent_id'] == agent, 'current_task'] = -1
+                self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = -1
+                self.agents.loc[self.agents['agent_id'] == agent, 'current_task_start_time'] = -1
+
+                # make the task done
+                self.tasks[agent_current_task - 1][self.TASK_STATUS] = self.DONE
+
+                # free the device
+                self.devices[agent_current_device - 1][self.DEVICE_STATUS] = self.AVAILABLE
+                self.devices[agent_current_device - 1][self.DEVICE_CURRENT_TASK_ID] = -1
+
+                print(f"=======> [from env - step]: agent is in {self.AGENT_AVAILABLE} state at time step {time_step}")
 
 
         # REWARD CALCULATION
@@ -372,11 +584,95 @@ class WarehouseEnv(gym.Env):
             "devices": self.devices
         }
 
+        # render the pygame
+        self.render()
+
         return observation, reward, done, truncated, info
     
+    # render locations (shelves)
+    def _render_locations(self):
+        location_left = pygame.image.load("location_left.png")
+        location_left = pygame.transform.scale(location_left, (self.LOCATION_WIDTH, self.LOCATION_HEIGHT))
+        location_left_rect = location_left.get_rect()
 
-    def render(self, mode='console'):
-        print("within render method")
+        location_right = pygame.image.load("location_right.png")
+        location_right = pygame.transform.scale(location_right, (self.LOCATION_WIDTH, self.LOCATION_HEIGHT))
+        location_right_rect = location_right.get_rect()
+
+        for index, loc in self.shelf_locations.iterrows():
+            if loc['left_or_right'] == 'left':
+                location_left_rect.x = loc['X']
+                location_left_rect.y = loc['Y']
+                self.screen.blit(location_left, location_left_rect)
+            else:
+                location_right_rect.x = loc['X']
+                location_right_rect.y = loc['Y']
+                self.screen.blit(location_right, location_right_rect)
+
+    # render devices
+    def _render_devices(self):
+        pallet_jack = pygame.image.load("pallet_jack.png")
+        pallet_jack = pygame.transform.scale(pallet_jack, (self.PALLET_JACK_WIDTH, self.PALLET_JACK_HEIGHT))
+        pallet_jack_rect = pallet_jack.get_rect()
+
+        # render pallet_jacks
+        for index, device in self.device_locations.iterrows():
+            if device['type'] == self.PALLET_JACK:
+                pallet_jack_rect.x = device['top_left_X']
+                pallet_jack_rect.y = device['top_left_Y']
+                self.screen.blit(pallet_jack, pallet_jack_rect)
+        
+        forklift = pygame.image.load("forklift.png")
+        forklift = pygame.transform.scale(forklift, (self.FORKLIFT_WIDTH, self.FORKLIFT_HEIGHT))
+        forklift_rect = forklift.get_rect()
+
+        # render forklifts
+        for index, device in self.device_locations.iterrows():
+            if device['type'] == self.FORKLIFT:
+                forklift_rect.x = device['top_left_X']
+                forklift_rect.y = device['top_left_Y']
+                self.screen.blit(forklift, forklift_rect)
+    
+    # render agents
+    def _render_agents(self):
+        worker = pygame.image.load("warehouse_worker.png")
+        worker = pygame.transform.scale(worker, (self.WORKER_WIDTH, self.WORKER_HEIGHT))
+        worker_rect = worker.get_rect()
+
+        robot = pygame.image.load("selector_robot.png")
+        robot = pygame.transform.scale(robot, (self.ROBOT_WIDTH, self.ROBOT_HEIGHT))
+        robot_rect = robot.get_rect()
+
+        # render workers
+        for index, agent in self.agent_locations.iterrows():
+            if agent['type'] == self.HUMAN:
+                worker_rect.x = agent['top_left_X']
+                worker_rect.y = agent['top_left_Y']
+                self.screen.blit(worker, worker_rect)
+        
+        # render robots
+        for index, agent in self.agent_locations.iterrows():
+            if agent['type'] == self.ROBOT:
+                robot_rect.x = agent['top_left_X']
+                robot_rect.y = agent['top_left_Y']
+                self.screen.blit(robot, robot_rect)
+    
+    def _render_pygame(self):
+        self.screen.fill((255, 255, 255)) # fill the screen with white color
+        self._render_locations() # locations means shelves (these are static - i.e does not move)
+        self._render_devices()
+        self._render_agents()
+
+        pygame.display.flip()
+        pygame.time.delay(100) # wait for 1s
+
+    
+    def render(self, mode='human'):
+        if mode == 'human':
+            self._render_pygame()
+        else:
+            print(f"=======> [from env - render]: {mode} not supported at this moment")
+            
     
     def close(self):
         pass
