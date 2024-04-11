@@ -60,7 +60,7 @@ while not done:
     for index, agent in env.agents.iterrows():
         agent_id = agent['agent_id']
 
-        task_index = agent["current_task"] -1 if agent["current_task"] != -1 else -1
+        current_action = agent["current_task"]
         agent_device = agent['current_device']
         agent_device_index = agent_device - 1
         agent_type = agent['type']
@@ -69,45 +69,20 @@ while not done:
         # if agent is not available, pass
         if agent["status"] == env.AGENT_ACTIVE:
             # if agent is doing a task, then send the current task (action) but with updated time step to the step function
-            next_state, reward, done, truncated, info = env.step(agent_id, task_index, time_step)
+            next_state, reward, done, truncated, info = env.step(agent_id, current_action, time_step)
 
 
+            # # update the task report
+            # task_report.loc[task_report["task_id"] == agent['current_task'], "end_time"] = time_step
+            # task_report.loc[task_report["task_id"] == agent['current_task'], "task_status"] = env.DONE
 
-            # # if more time there to complete task, pass
-            if time_step <= env.tasks[task_index][env.TASK_TIME] + task_report[task_report["task_id"] == agent['current_task']]["start_time"].values[0]:
-                print(f"===> [main - Agent-{agent['agent_id']}] is still doing the task: {agent['current_task']} at time step: {time_step}, hence skipping to next agent\n")
-                continue # pass and continue to next agent
-            else:
-                print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] is done with the task: {env.agents.loc[index, 'current_task']} at time step: {time_step}")
-
-                # make the agent free
-                env.agents.loc[index, "status"] = env.AGENT_AVAILABLE
-                env.agents.loc[index, 'current_task'] = -1
-                env.agents.loc[index, 'current_device'] = -1
-
-                # make the task done
-                env.tasks[task_index][env.TASK_STATUS] = env.DONE
-
-                # free the device
-                env.devices[agent_device_index][env.DEVICE_STATUS] = env.AVAILABLE
-                env.devices[agent_device_index][env.DEVICE_CURRENT_TASK_ID] = -1
-                
-
-                # update the task report
-                task_report.loc[task_report["task_id"] == agent['current_task'], "end_time"] = time_step
-                task_report.loc[task_report["task_id"] == agent['current_task'], "task_status"] = env.DONE
-
-                # update the agent activity report
-                agent_activity_report.loc[agent_activity_report["agent_id"] == agent['agent_id'], "end_time"] = time_step
-
-                print(f"===> [main - Agent-{env.agents.loc[index, 'agent_id']}] is in {env.agents.loc[index, 'status']} state at time step: {time_step}")
+            # # update the agent activity report
+            # agent_activity_report.loc[agent_activity_report["agent_id"] == agent['agent_id'], "end_time"] = time_step
 
         # if agent is available, do an observation and take an action (select a task)
-        if env.agents.loc[index, "status"] == env.AGENT_AVAILABLE:
-            print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] is available at time step: {time_step}")
-            env.agents.loc[index,'status'] = env.AGENT_ACTIVE
-
+        else:
             # get the observation for the agent
+            print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] is free and hence getting the observation at time step: {time_step}")
             obs = env.get_observation()
 
             # Choose and action based on the observation (POLICY)
@@ -115,33 +90,19 @@ while not done:
             if action is None:
                 print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] could not find any available tasks to do at time step: {time_step}, hence skipping to next agent\n")
                 continue
-            
-            task_index = action - 1
+
+            print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] selected the task: {action} at time step: {time_step}")
 
             # do the action on environment and get the next state, reward, done, truncated and info
-            next_state, reward, done, truncated, info = env.step(agent_id, task_index, time_step)
+            next_state, reward, done, truncated, info = env.step(agent_id, action, time_step)
 
-            # Since enviorenment will decide the device (based on task and device availability)
-            # we have get the device ID once the action is performed on the environment
-            for i, row in enumerate(next_state['devices']):
-                if row[env.DEVICE_CURRENT_TASK_ID] == action:
-                    device_id = row[env.DEVICE_ID]
-                    break     
-            device_index = device_id - 1 # Because devices are a 2D array and we select them based on the index of inner array
-
-            # update agent attributes to indicate start of assigned task and to keep track of task_id, device, reward and etc
-            env.agents.loc[index,'current_task'] = action
-            env.agents.loc[index,'current_device'] = device_id
-            env.agents.loc[index,'reward'] = env.agents.loc[index, 'reward'] + reward
-
-            print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] started doing the task: {env.agents.loc[index, 'current_task']} at time step: {time_step}, on device: {device_id}\n")
 
             # add entries to the task report and agent activity report
-            task_new_record = pd.DataFrame([[action, env.agents.loc[index,'agent_id'], device_id, env.ACTIVE, env.tasks[task_index][env.TASK_TIME], time_step, None]], columns=task_report.columns)
-            task_report = pd.concat([task_report, task_new_record], ignore_index=True)
+            # task_new_record = pd.DataFrame([[action, env.agents.loc[index,'agent_id'], device_id, env.ACTIVE, env.tasks[task_index][env.TASK_TIME], time_step, None]], columns=task_report.columns)
+            # task_report = pd.concat([task_report, task_new_record], ignore_index=True)
 
-            agent_activity_new_record = pd.DataFrame([[env.agents.loc[index,'agent_id'], action, device_id, time_step, None]], columns=agent_activity_report.columns)
-            agent_activity_report = pd.concat([agent_activity_report, agent_activity_new_record], ignore_index=True)
+            # agent_activity_new_record = pd.DataFrame([[env.agents.loc[index,'agent_id'], action, device_id, time_step, None]], columns=agent_activity_report.columns)
+            # agent_activity_report = pd.concat([agent_activity_report, agent_activity_new_record], ignore_index=True)
 
 
 print("===> [main]: task_report.head(): \n", task_report.head(10))
