@@ -1,3 +1,8 @@
 agent_id,type,status,reward,current_task,current_device,current_task_start_time
 01,human,available,0,-1,-1,-1
-02,robot,available,0,-1,-1,-1
+02,human,available,0,-1,-1,-1
+03,human,available,0,-1,-1,-1
+04,human,available,0,-1,-1,-1
+05,robot,available,0,-1,-1,-1
+06,robot,available,0,-1,-1,-1
+07,robot,available,0,-1,-1,-1

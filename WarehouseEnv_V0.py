@@ -148,6 +148,8 @@ class WarehouseEnv(gym.Env):
     LOCATION_WIDTH = 50
     LOCATION_HEIGHT = 50
 
+    STEP_DURATION = 1
+
     def encode_tasks_and_devices(self, tasks, devices):
         # encode the tasks df
         type_encoding = {"pick": self.PICK, "put": self.PUT, "load": self.LOAD, "repl": self.REPL} # encode "type"
@@ -158,8 +160,8 @@ class WarehouseEnv(gym.Env):
         tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc (remove the first character and get the number)
         
         tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc (remove the first character and get the number)
-        tasks.fillna({'order':'o1'}, inplace=True)  # encode to order (fill null values by o1, because in next line we are removing the first character)
         
+        tasks.fillna({'order':'o-1'}, inplace=True)  # encode to order (fill null values by o1, because in next line we are removing the first character)
         tasks["order"] = tasks["order"].apply(lambda order:  order[1:]) # encode to order (remove the first character and get the number)
         
         status_encoding = {"available": self.AVAILABLE, "active": self.ACTIVE, "done": self.DONE} # encode status
@@ -189,7 +191,7 @@ class WarehouseEnv(gym.Env):
         super(WarehouseEnv, self).__init__()
 
         self.time_step = 0 # starting time step of the env
-        # Make sure that in the step() method, call render() if only time_step increased. 
+        # make sure to update this value from your main file (if you need to track it in the env too)
 
         # The action of a agent is selecting a task_id to do.
         # So, action state can be a large number. That means the number of available tasks 
@@ -280,7 +282,6 @@ class WarehouseEnv(gym.Env):
         
         self.warehoue_now = warehouse_now 
 
-
         # getting all different shelf locations based on provided task list (tasks.csv)
         locations = [task[self.TASK_FROM_LOC] for task in self.tasks]
         locations.extend([task[self.TASK_TO_LOC] for task in self.tasks])
@@ -311,7 +312,16 @@ class WarehouseEnv(gym.Env):
             shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
         
         print("==>[from env - __init__]: shelf_locations: \n", shelf_locations)
-        self.shelf_locations = shelf_locations      
+        self.shelf_locations = shelf_locations    
+
+        ####################################
+        ####      EPISODE REPORTS      #####
+        #################################### 
+        # A dataframe to store the task started time, who did it and when it is done
+        # this will be used to create a report and visualize the performance of the agents
+        task_report = pd.DataFrame(columns=["task_id", "agent_id", "device_id", "task_time", "start_time", "end_time"])
+        self.task_report = task_report
+        
 
         ####################################
         ####     OBSERVATION SPACE     #####
@@ -439,13 +449,24 @@ class WarehouseEnv(gym.Env):
                 print(f"=======> [from env - step]: agent is still active doing task {agent_current_task}, hence skipping to next agent")
                 
                 # update agent location (decide based on current time step, task from location and task to location)
+                # also move (update) the selected device.
                 task_duration = self.tasks[agent_current_task - 1][self.TASK_TIME]
                 task_from_loc = self.tasks[agent_current_task - 1][self.TASK_FROM_LOC]
                 task_from_loc_X = self.shelf_locations.query(f'location_id == {task_from_loc}')['X'].values[0]
+                # if task_from_loc is a left location, make X coordinate of the agent a little right to the shelf
+                if self.shelf_locations.query(f'location_id == {task_from_loc}')['left_or_right'].values[0] == 'left':
+                    task_from_loc_X = task_from_loc_X + self.LOCATION_WIDTH
+                else:
+                    task_from_loc_X = task_from_loc_X - 20
                 task_from_loc_Y = self.shelf_locations.query(f'location_id == {task_from_loc}')['Y'].values[0]
 
                 task_to_loc = self.tasks[agent_current_task - 1][self.TASK_TO_LOC]
                 task_to_loc_X = self.shelf_locations.query(f'location_id == {task_to_loc}')['X'].values[0]
+                # if task_to_loc is a left location, make X coordinate of the agent destination a little right to the shelf
+                if self.shelf_locations.query(f'location_id == {task_to_loc}')['left_or_right'].values[0] == 'left':
+                    task_to_loc_X = task_to_loc_X + self.LOCATION_WIDTH
+                else:
+                    task_to_loc_X = task_to_loc_X - 20
                 task_to_loc_Y = self.shelf_locations.query(f'location_id == {task_to_loc}')['Y'].values[0]
 
                 # distance to be covered by the agent in each time step
@@ -480,10 +501,22 @@ class WarehouseEnv(gym.Env):
 
                 self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_X'] = agent_X
                 self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_Y'] = agent_Y
+
+                # update the device location
+                if agent_current_device != -1:
+                    device_X = agent_X
+                    device_Y = agent_Y
+                    self.device_locations.loc[self.device_locations['device_id'] == agent_current_device, 'top_left_X'] = device_X
+                    self.device_locations.loc[self.device_locations['device_id'] == agent_current_device, 'top_left_Y'] = device_Y
+
+                
                 
                 reward = 0
             else: # if agent is done with the task, make agent free
                 print(f"=======> [from env - step]: agent is finishing the task {agent_current_task} at time step {time_step}")
+
+                # update task report
+                self.task_report.loc[self.task_report["task_id"] == agent_current_task, "end_time"] = time_step
 
                 # make the agent free
                 self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
@@ -495,6 +528,11 @@ class WarehouseEnv(gym.Env):
                 self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_X'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_X'].values[0]
                 self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_Y'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_Y'].values[0]
 
+                # move the device to default location
+                if agent_current_device != -1:
+                    self.device_locations.loc[self.device_locations['device_id'] == agent_current_device, 'top_left_X'] = self.device_locations.query(f'device_id == {agent_current_device}')['default_loc_X'].values[0]
+                    self.device_locations.loc[self.device_locations['device_id'] == agent_current_device, 'top_left_Y'] = self.device_locations.query(f'device_id == {agent_current_device}')['default_loc_Y'].values[0]
+                
                 # make the task done
                 self.tasks[agent_current_task - 1][self.TASK_STATUS] = self.DONE
 
@@ -503,8 +541,7 @@ class WarehouseEnv(gym.Env):
                 self.devices[agent_current_device - 1][self.DEVICE_CURRENT_TASK_ID] = -1
 
                 print(f"=======> [from env - step]: agent is in {self.AGENT_AVAILABLE} state at time step {time_step}")
-        else: # If the agent is available (free to take up the suggested task)
-
+        else: # If the agent is Available (FREE to take up the suggested task)
             # REWARD CALCULATION
             if action > len(self.tasks):
                 # Punish if the selected task is grater than available number of tasks
@@ -555,6 +592,16 @@ class WarehouseEnv(gym.Env):
                                     self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = device[self.DEVICE_ID]
                                     break
                         else:
+                            # as there is no available device to work on this task, free the agent and move to default location
+                            self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
+                            self.agents.loc[self.agents['agent_id'] == agent, 'current_task'] = -1
+                            self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = -1
+                            self.agents.loc[self.agents['agent_id'] == agent, 'current_task_start_time'] = -1
+
+                            # move agent to default location
+                            self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_X'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_X'].values[0]
+                            self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_Y'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_Y'].values[0]
+
                             reward = -1 # punish if no available pallet jacks
                             # update the reward of the agent
                             self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
@@ -585,6 +632,16 @@ class WarehouseEnv(gym.Env):
                                     self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = device[self.DEVICE_ID]
                                     break
                         else:
+                            # as there is no available device to work on this task, free the agent and move to default location
+                            self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
+                            self.agents.loc[self.agents['agent_id'] == agent, 'current_task'] = -1
+                            self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = -1
+                            self.agents.loc[self.agents['agent_id'] == agent, 'current_task_start_time'] = -1
+
+                            # move agent to default location
+                            self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_X'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_X'].values[0]
+                            self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_Y'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_Y'].values[0]
+                            
                             reward = -1 # punish if no available pallet jacks
 
                             # update the reward of the agent
@@ -597,6 +654,18 @@ class WarehouseEnv(gym.Env):
                 else: # robots can only do pick tasks and they dont need any devices for that. 
 
                     if self.tasks[action_index][self.TASK_TYPE] != self.PICK: # if the task type is not a pick task, punish
+                        
+                        # as the robot selected task is wrong make it free
+                        self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
+                        self.agents.loc[self.agents['agent_id'] == agent, 'current_task'] = -1
+                        self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = -1
+                        self.agents.loc[self.agents['agent_id'] == agent, 'current_task_start_time'] = -1
+
+                        # move agent to default location
+                        self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_X'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_X'].values[0]
+                        self.agent_locations.loc[self.agent_locations['agent_id'] == agent, 'top_left_Y'] = self.agent_locations.query(f'agent_id == {agent}')['default_loc_Y'].values[0]
+
+
                         reward = -1
                         # update the reward of the agent
                         self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
@@ -607,6 +676,13 @@ class WarehouseEnv(gym.Env):
                         
                         # make the task to active status
                         self.tasks[action_index][self.TASK_STATUS] = self.ACTIVE
+
+            # add a record to task report
+            agent_current_device = self.agents.query(f'agent_id == {agent}')['current_device'].values[0]
+            # if only the reward is postive add the record (reward negative means there was a problem getting the task)
+            if reward > 0:
+                task_report_rec = pd.DataFrame([[action, agent, agent_current_device, self.tasks[action_index][self.TASK_TIME], time_step, None]], columns=self.task_report.columns)
+                self.task_report = pd.concat([self.task_report, task_report_rec], ignore_index=True)
 
         print("=======> [from env - step]: reward: ", reward)
         # DONE?
@@ -706,14 +782,63 @@ class WarehouseEnv(gym.Env):
                 robot_rect.y = agent['top_left_Y']
                 self.screen.blit(robot, robot_rect)
     
+    # render stats
+    def _render_stats(self):
+        # show time step
+        font = pygame.font.Font(None, 24)
+        text = font.render(f"Time Step: {self.time_step}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y))
+
+        # show total task number
+        font = pygame.font.Font(None, 24)
+        text = font.render(f"Total Tasks: {len(self.tasks)}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 20))
+
+        # show remaining tasks
+        num_available_tasks = len([task for task in self.tasks if task[self.TASK_STATUS] == self.AVAILABLE])
+        text = font.render(f"Remaining Tasks: {num_available_tasks}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 40))
+
+        # show total device number
+        font = pygame.font.Font(None, 24)
+        text = font.render(f"Total Devices: {len(self.devices)}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 60))
+
+        # show available devices
+        num_available_devices = len([device for device in self.devices if device[self.DEVICE_STATUS] == self.AVAILABLE])
+        text = font.render(f"Free Devices: {num_available_devices}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 80))
+
+        # show free pallet jacks
+        num_available_pallet_jacks = len([pj for pj in self.devices if pj[self.DEVICE_STATUS] == self.AVAILABLE and pj[self.DEVICE_TYPE] == self.PALLET_JACK])
+        text = font.render(f"Free Pallet Jacks: {num_available_pallet_jacks}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 100))
+
+        # show free forklifts
+        num_available_forklifts = len([fk for fk in self.devices if fk[self.DEVICE_STATUS] == self.AVAILABLE and fk[self.DEVICE_TYPE] == self.FORKLIFT])
+        text = font.render(f"Free Forklifts: {num_available_forklifts}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 120))
+
+        # show agents
+        num_agents = len(self.agents)
+        text = font.render(f"Total Agents: {num_agents}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 140))
+
+        # show free agents
+        num_free_agents = self.agents.query(f"status == {self.AGENT_AVAILABLE}").shape[0]
+        text = font.render(f"Free Agents: {num_free_agents}", True, (0, 0, 0))
+        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 160))
+
+   
     def _render_pygame(self):
         self.screen.fill((255, 255, 255)) # fill the screen with white color
         self._render_locations() # locations means shelves (these are static - i.e does not move)
         self._render_devices()
         self._render_agents()
+        self._render_stats()
 
         pygame.display.flip()
-        pygame.time.delay(200) # wait for 1s
+        pygame.time.delay(self.STEP_DURATION) # wait time
 
     
     def render(self, mode='human'):
@@ -732,85 +857,3 @@ class WarehouseEnv(gym.Env):
             "devices": self.devices
         }
     
-
-
-
-# tasks = pd.read_csv('tasks.csv')
-# devices = pd.read_csv('devices.csv')
-# tasks.head()
-
-# # encode "type"
-# type_encoding = {
-#     "pick": 0,
-#     "put": 1,
-#     "load": 2,
-#     "repl": 3
-# }
-# tasks["type"] = tasks["type"].map(type_encoding)
-
-# tasks["product"] = tasks["product"].apply(lambda prod:  prod[1:]) # encode product
-# tasks["from loc"] = tasks["from loc"].apply(lambda loc:  loc[1:]) # encode from loc
-# tasks["to loc"] = tasks["to loc"].apply(lambda loc:  loc[1:]) # encode to loc
-
-# tasks.fillna({'order':'o0'}, inplace=True)  # encode to order
-# tasks["order"] = tasks["order"].apply(lambda order:  order[1:])
-
-
-# # encode status
-# status_encoding = {
-#     "available": 0,
-#     "active": 1,
-#     "done": 2,
-# }
-# tasks["status"] = tasks["status"].map(status_encoding)
-
-# tasks.head()
-
-# task_list = tasks.to_numpy().tolist()
-# task_list = [list( map(int,i) ) for i in task_list]
-# print(task_list)
-
-# devices = pd.read_csv('devices.csv')
-# # devices.head()
-
-# # type encodings
-# type_encodings = {
-#     "pallet_jack": 0,
-#     "forklift": 1,
-#     "not_a_device": 2
-# }
-# devices["type"] = devices["type"].map(type_encodings)
-
-# # encode status
-# status_encoding = {
-#     "available": 0,
-#     "active": 1,
-# }
-# devices["status"] = devices["status"].map(status_encoding)
-
-# device_list = devices.to_numpy().tolist()
-# print(device_list)
-
-# devices.head(10)
-
-# env = WarehouseEnv()
-# print("env taskssss===")
-# print(env.tasks)
-# print(env.devices)
-
-# print(env.observation_space)
-
-# print("a sampleeeee: ")
-# print(env.sample())
-
-# print("reseting ======")
-# print(env.reset())
-
-
-# print("action space")
-# print(env.action_space)
-# print(env.action_space.sample())
-
-# print("take a action to select task 1 by a human====")
-# print(env.step(1, env.HUMAN))
-        

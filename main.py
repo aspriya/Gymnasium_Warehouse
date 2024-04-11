@@ -39,23 +39,31 @@ def choose_random_action(tasks):
 
 # Note: tasks, devices and agents will be read, encoded and handled in the WarehouseEnv class
 
-
-# A dataframe to store the task started time, who did it and when it is done
-# this will be used to create a report and visualize the performance of the agents
-task_report = pd.DataFrame(columns=["task_id", "agent_id", "device_id", "task_status", "task_time", "start_time", "end_time"])
-agent_activity_report = pd.DataFrame(columns=["agent_id", "task_id", "device_id", "start_time", "end_time"])
-
-#############
-
 done = False
 time_step = -1
 
+time_step_records = pd.DataFrame(columns=['time_step', 'remaining_tasks', 'free_agents', 'free_devices'])
 while not done:
     time_step = time_step + 1
+
+    #update env time step
+    env.time_step = time_step
 
     # if time_step > 11:
     #     done = True
     #     break
+
+    # Create and maintain a df to track no of available tasks, free agents, free devices at each time step.
+    # This will be used for analysis and debugging
+    available_agents = env.agents.query(f"status == {env.AGENT_AVAILABLE}").shape[0]
+    available_devices = len([device for device in env.devices if device[env.DEVICE_STATUS] == env.AVAILABLE])
+    time_step_rec = pd.DataFrame([[time_step, \
+                        sum(task[env.TASK_STATUS] == env.AVAILABLE for task in env.tasks), \
+                        available_agents, \
+                        available_devices]], \
+                        columns=time_step_records.columns
+                    )
+    time_step_records = pd.concat([time_step_records, time_step_rec], ignore_index=True)
 
     for index, agent in env.agents.iterrows():
         agent_id = agent['agent_id']
@@ -104,8 +112,58 @@ while not done:
             # agent_activity_new_record = pd.DataFrame([[env.agents.loc[index,'agent_id'], action, device_id, time_step, None]], columns=agent_activity_report.columns)
             # agent_activity_report = pd.concat([agent_activity_report, agent_activity_new_record], ignore_index=True)
 
+print("Simulation done!")
+print("Task report:")
+# if there are records where end time is None, then set the end time to the start time + task time
+# loop through the task report and update the end time for the tasks that are not done
+for index, row in env.task_report.iterrows():
+    if row["end_time"] is None:
+        env.task_report.loc[index, "end_time"] = row["start_time"] + row["task_time"]
 
-print("===> [main]: task_report.head(): \n", task_report.head(10))
-print("===> [main]: agent_activity_report.head(): \n", agent_activity_report.head(10))
-print("===> [main]: agents.head(): \n", env.agents.head(10))
+print(env.task_report)
+
+# a df to store agent task distribution
+agent_task_distribution = pd.DataFrame(columns=["agent_id", "total_tasks", "total_time", "avg_time_per_task"])
+# loop through the agent activity report and calculate the total tasks done by each agent
+for agent_id in env.task_report["agent_id"].unique():
+    agent_tasks = env.task_report[env.task_report["agent_id"] == agent_id]
+    total_tasks = agent_tasks.shape[0]    
+    total_time = agent_tasks["task_time"].sum() # sum of all the task times
+    avg_time_per_task = total_time / total_tasks
+
+    agent_task_distribution_rec = pd.DataFrame([[agent_id, total_tasks, total_time, avg_time_per_task]], columns=agent_task_distribution.columns)
+    agent_task_distribution = pd.concat([agent_task_distribution, agent_task_distribution_rec], ignore_index=True)
+
+agent_task_distribution = agent_task_distribution.sort_values(by="agent_id") # sort by the agent_id
+print("Agent task distribution:")
+print(agent_task_distribution)
+
+print("Time step records:")
+print(time_step_records.tail())
+
+avg_free_agents_per_time_step = time_step_records["free_agents"].mean()
+avg_free_devices_per_time_step = time_step_records["free_devices"].mean()
+print(f"Average free agents per time step: {avg_free_agents_per_time_step}")
+print(f"Average free devices per time step: {avg_free_devices_per_time_step}")
+
+# plot the agent task distribution
+import matplotlib.pyplot as plt
+plt.bar(agent_task_distribution["agent_id"], agent_task_distribution["total_tasks"])
+plt.xlabel("Agent ID")
+plt.ylabel("Total Tasks")
+plt.title("Agent Task Distribution")
+
+# plot the time step records
+plt.figure()
+plt.plot(time_step_records["time_step"], time_step_records["remaining_tasks"], label="Remaining Tasks")
+plt.plot(time_step_records["time_step"], time_step_records["free_agents"], label="Free Agents")
+plt.plot(time_step_records["time_step"], time_step_records["free_devices"], label="Free Devices")
+plt.xlabel("Time Step")
+plt.ylabel("Count")
+plt.title("Time Step Records")
+plt.legend()
+plt.show()
+
+
+
 

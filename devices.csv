@@ -1,7 +1,11 @@
 device_id,type,status,current_task_id
-001,forklift,available,-1
-002,forklift,available,-1
-003,forklift,available,-1
-004,forklift,available,-1
+001,pallet_jack,available,-1
+002,pallet_jack,available,-1
+003,pallet_jack,available,-1
+004,pallet_jack,available,-1
 005,pallet_jack,available,-1
-006,pallet_jack,available,-1
+006,forklift,available,-1
+007,forklift,available,-1
+008,forklift,available,-1
+009,forklift,available,-1
+010,forklift,available,-1
