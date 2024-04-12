@@ -7,6 +7,9 @@ from tensorflow.keras.models import Model, Sequential # here we use functional A
 import numpy as np
 import pandas as pd
 import random
+import keras
+from keras import ops
+
 
 
 ## The core concept is to provide the task list and device list information as separate inputs 
@@ -68,13 +71,19 @@ AVAILABLE = 0
 ACTIVE = 1
 
 # Helper function to choose an action based on the current state
+# Helper function to choose an action based on the current state
 def choose_random_action(tasks):
     # Choose an random task (action). But this task should be an available task
-    available_tasks = [x for x in tasks if x[TASK_STATUS] == 0]  # Filter tasks with status 0 (available)
+    available_tasks = [x for x in tasks if x[env.TASK_STATUS] == 0]  # Filter tasks with status 0 (available)
     available_task_ids = [sublist[0] for sublist in available_tasks]
-    random_action = random.choice(available_task_ids) # Randomly select an available task. (task and device ids start from 1)
-    print(f"Random action selected:", random_action)
-    return random_action
+
+    if len(available_task_ids) > 0:
+        random_action = random.choice(available_task_ids) # Randomly select an available task. (task and device ids start from 1)
+        print(f"Random action selected:", random_action)
+        return random_action
+    else:
+        print("No available tasks to choose from. Returning None.")
+        return None
 
 
 # Helper class for the replay buffer 
@@ -153,7 +162,7 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # ------------------
     # Flatten the combined input before the output layer
     # ------------------
-    flattened_x1 = Reshape((1, 160))(x1)  # Flatten the input for the output layer
+    flattened_x1 = Reshape((1, 16 * num_actions))(x1)  # Flatten the input for the output layer
 
     # ------------------
     # Output Layers (Adjust to match your number of tasks)
@@ -168,7 +177,10 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # ------------------
     # Compile the Model 
     # ------------------
-    model.compile(optimizer='adam', loss='mse')  # You'll likely use Q-value loss functions in practice
+    # You'll likely use Q-value loss functions in practice
+    model.compile(optimizer=keras.optimizers.Adam(), 
+                  loss='mean_squared_error',
+                  metrics=['accuracy', 'mean_squared_error'])  
 
     return model
 
@@ -182,146 +194,166 @@ target_dqn.set_weights(dqn.get_weights())  # Initialize target network with same
 buffer = ReplayBuffer(50000) # Initialize replay buffer with capacity of 50,000 experience samples
 optimizer = Adam()
 gamma = 0.99  # Discount factor for future rewards
-batch_size = 9
+batch_size = 10
 
-# A dataframe to store the task started time, who did it and when it is done
-# this will be used to create a report and visualize the performance of the agents
-task_report = pd.DataFrame(columns=["task_id", "agent_id", "device_id", "task_status", "task_time", "start_time", "end_time"])
-agent_activity_report = pd.DataFrame(columns=["agent_id", "task_id", "device_id", "start_time", "end_time"])
 
 # Training loop
-agent_type = HUMAN # at a time train a human agent or a robot agent.
-agent_status = AVAILABLE # 0 means available, 1 means busy
+training_agent_id = 2
+losses = []
+
 for episode in range(1):
-    (state, info) = env.reset()
     done = False
     total_reward = 0
-
-    action = None
-    action_index = None
-    device_id = None
-    device_index = None
-
     time_step = -1
+
+    # Reset the environment
+    env.reset()
 
     while not done:
         time_step += 1
+        
+        env.time_step = time_step #update env time step
 
-        ### Following set of lines is for collecting training samples (i.e filling the experiance replay bugffer)
-        # if agent is active, check if the task time is over, if so make the task done and agent available
-        if agent_status == ACTIVE:
-            # if more time there to complete task, pass
-            if time_step <= task_report[task_report['task_id'] == action]['start_time'].values[0] + state['tasks'][action_index][TASK_TIME]:
-                print(f"\n===> [collecting training samples]: agent is still working on task: {action}, so passing the current time step:", time_step)
-                continue # continue to next time step (next iteration)
+        for index, agent in env.agents.iterrows():
+
+            agent_id = agent['agent_id']
+            current_action = agent["current_task"]
+            agent_device = agent['current_device']
+            agent_device_index = agent_device - 1
+            agent_type = agent['type']
+
+            ### Following set of lines is for collecting training samples (i.e filling the experiance replay bugffer)
+            # if agent is active, check if the task time is over, if so make the task done and agent available
+            # if agent is not available, pass
+            if agent["status"] == env.AGENT_ACTIVE:
+                # if agent is doing a task, then send the current task (action) but with updated time step to the step function
+                next_state, reward, done, truncated, info = env.step(agent_id, current_action, time_step)
             else:
-                # make the task done
-                env.tasks[action_index][TASK_STATUS] = env.DONE
+                # if agent is available, do an observation, decide on an action (select a task) and do it on env
+                print(f"===> [collecting training samples - Agent-{env.agents.loc[index,'agent_id']}] is free and hence getting the observation at time step: {time_step}")
+                obs = env.get_observation()
 
-                # free the device
-                env.devices[device_index][env.DEVICE_STATUS] = env.AVAILABLE
-                env.devices[device_index][env.DEVICE_CURRENT_TASK_ID] = 999
-                print(f"\n===> [collecting training samples]: now task status is {env.tasks[action_index][TASK_STATUS]} for task: {action}, at time step:", time_step)
-                print(f"\n===> [collecting training samples]: now device status is {env.devices[device_index][env.DEVICE_STATUS]} for device: {device_id}, at time step:", time_step)
+                # Choose an action based on the observation (POLICY)
+                action =  choose_random_action(obs['tasks'])  # this is where we should put out model (i.e give the obs, and get an action to do)
+                if action is None:
+                    print(f"===> [collecting training samples - Agent-{env.agents.loc[index,'agent_id']}] could not find any available tasks to do at time step: {time_step}, hence skipping to next agent\n")
+                    continue
 
-                # update report entries
-                task_report.loc[task_report['task_id'] == action, 'task_status'] = env.DONE
-                task_report.loc[task_report['task_id'] == action, 'end_time'] = time_step
+                print(f"===> [collecting training samples - Agent-{env.agents.loc[index,'agent_id']}] selected the task: {action} at time step: {time_step}")
 
-                agent_activity_report.loc[agent_activity_report['task_id'] == action, 'end_time'] = time_step
+                # do the action on environment and get the next state, reward, done, truncated and info
+                next_state, reward, done, truncated, info = env.step(agent_id, action, time_step)
 
-                # make the agent free (available)
-                agent_status = AVAILABLE         
-
-        # if agent is available, update the task to active and agent to active
-        if agent_status == AVAILABLE:
-            agent_status = ACTIVE
-
-            action = choose_random_action(state['tasks'])  # Implement your action selection strategy
-            action_index = action - 1 # Because actions are a 2D array and we select them based on the index of inner array
-            next_state, reward, done, truncated, info = env.step(action_index, agent_type) 
-
-            print(f"\n===> [collecting training samples]: agent is available, so starting a new task: {action}, at time step:", time_step)
-
-            # take the device id from the next_state.devices whose current_task_id is action
-            for index, row in enumerate(next_state['devices']):
-                if row[env.DEVICE_CURRENT_TASK_ID] == action:
-                    device_id = row[env.DEVICE_ID]
-                    break     
-            device_index = device_id - 1 # Because devices are a 2D array and we select them based on the index of inner array
-
-            # add entries to the task report and agent activity report
-            task_new_record = pd.DataFrame([{"task_id": action, "agent_id": 1, "device_id": device_id, "task_status": env.ACTIVE, "task_time": state['tasks'][action_index][TASK_TIME], "start_time": time_step, "end_time": None}])
-            task_report = pd.concat([task_report, task_new_record])  # Use ignore_index=True to avoid duplicate indices
-
-            agent_activity_new_record = pd.Series({"agent_id": 1, "task_id": action, "device_id": device_id, "start_time": time_step, "end_time": None})
-            agent_activity_report = pd.concat([agent_activity_report, agent_activity_new_record], ignore_index=True)
-
-            buffer.store(state, action, reward, next_state, done)
-            state = next_state
-            total_reward += reward
-            ## End of experiance replay ###
-            print(f"\n===> [collecting training samples]: agent is working on task: {action}, at time step:", time_step)
-            print(task_report)
-
-            if len(buffer.buffer) > batch_size: # Start training once buffer has enough samples
-                print("\n ===> [Training]: finished collecting training sample (filled experiance replay buffer)")
-                states, actions, rewards, next_states, dones = buffer.sample(batch_size)
-
-                # print('\n====>[Training]: states:', states, 'actions:', actions, 'rewards:', rewards, 'next_states:', next_states, 'dones:', dones, '\n')
-                print("\n ===> [Training]: len(states):", len(states), ",len(actions):", len(actions), ",len(rewards):", len(rewards), ",len(next_states):", len(next_states), ",len(dones):", len(dones))
-                print("actions[0]:", actions)
+                # store the experiance in the replay buffer if only the agent is the training agent
+                if agent_id == training_agent_id:
+                    buffer.store(obs, action, reward, next_state, done)
+                    state = next_state
+                    total_reward += reward
+                    ## End of experiance replay ###
                 
-                # get a batch of tasks and devices
-                tasks = [[sublist for sublist in element['tasks']] for element in states]
-                devices = [[sublist for sublist in element['devices']] for element in states]
+                # only train if the agent is the training agent and the buffer is enough (collected enough samples)
+                if agent_id == training_agent_id and len(buffer.buffer) > batch_size:
+                    print("\n ===> [Training]: finished collecting training sample (filled experiance replay buffer)")
+                    states, actions, rewards, next_states, dones = buffer.sample(batch_size)
 
-                # get a batch of next tasks and devices
-                next_tasks = [[sublist for sublist in element['tasks']] for element in next_states]
-                next_devices = [[sublist for sublist in element['devices']] for element in next_states]
+                    # print('\n====>[Training]: states:', states, 'actions:', actions, 'rewards:', rewards, 'next_states:', next_states, 'dones:', dones, '\n')
+                    print("\n ===> [Training]: len(states):", len(states), ",len(actions):", len(actions), ",len(rewards):", len(rewards), ",len(next_states):", len(next_states), ",len(dones):", len(dones))
+                    print("actions:", actions)
+                    print("actions[0]:", actions[0])
+                    
+                    # get a batch of tasks and devices
+                    tasks = [[sublist for sublist in element['tasks']] for element in states]
+                    devices = [[sublist for sublist in element['devices']] for element in states]
 
-                print("\n===> [Training]: the first observation in the selected batch from experiances for training =====>")
-                print("[Training]: tasks[0]:", tasks[0])
-                print("\n[Training]: devices[0]:", devices[0])
+                    # Extend devices with dummy not usable devices. This is needed so that we can input to the model.
+                    # note that here devices means a batch of devices lists (i.e this is a 3D list)
+                    for device_list in devices: # Loop through the 3D list
+                        for i in range(len(device_list) + 1, env.action_space.n + 1):
+                            new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
+                            device_list.append(new_inner_list)
 
-                # Convert to TensorFlow tensors
-                tasks_tensor = tf.convert_to_tensor(tasks, dtype=tf.float32)  # Specify float32 for common use 
-                devices_tensor = tf.convert_to_tensor(devices, dtype=tf.float32)
 
-                next_tasks_tensor = tf.convert_to_tensor(next_tasks, dtype=tf.float32)
-                next_devices_tensor = tf.convert_to_tensor(next_devices, dtype=tf.float32)
+                    # get a batch of next tasks and devices
+                    next_tasks = [[sublist for sublist in element['tasks']] for element in next_states]
+                    next_devices = [[sublist for sublist in element['devices']] for element in next_states]
 
-                # Calculate Q-values from the main network
-                q_values_from_main_network = dqn([tasks_tensor,devices_tensor])  # Initialize targets with current Q-values (shape is: batch_size, 1, 10)
-                q_values_from_main_network = tf.reshape(q_values_from_main_network, (batch_size, 10)) # Reshaping the EagerTensor
-                print("\n===> [Training]: Q values from main network by passing a batch of experiances: =====>\n")
-                print(q_values_from_main_network[0])
-                print(q_values_from_main_network[1][7])
+                    # Extend next_devices with dummy not usable devices. This is needed so that we can input to the model.
+                    # note that here devices means a batch of devices lists (i.e this is a 3D list)
+                    for next_device_list in next_devices: # Loop through the 3D list
+                        for i in range(len(next_device_list) + 1, env.action_space.n + 1):
+                            new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
+                            next_device_list.append(new_inner_list)
 
-                # Get Q-values from target network
-                q_values_from_target_network = target_dqn([next_tasks_tensor, next_devices_tensor])
-                q_values_from_target_network = tf.reshape(q_values_from_target_network, (batch_size, 10)) # Reshaping the EagerTensor
-                print("\n===> [Training]: Q values from target network by passing a batch of experiances: =====>\n")
-                print(q_values_from_target_network[1])
+                    print("\n===> [Training]: the first observation in the selected batch from experiances for training =====>")
+                    print("[Training]: tasks[0]:", tasks[0])
+                    print("\n[Training]: devices[0]:", devices[0])
 
-                # Calculate the maximum Q-values of the next states (from the target network)
-                max_q_values_of_next_states = np.max(q_values_from_target_network, axis=1)
-                print("\n===> [Training]: Max Q values from target network by passing a batch of experiances: =====>\n")
-                print(max_q_values_of_next_states)
+                    # Convert to TensorFlow tensors
+                    tasks_tensor = tf.convert_to_tensor(tasks, dtype=tf.float32)  # Specify float32 for common use 
+                    devices_tensor = tf.convert_to_tensor(devices, dtype=tf.float32)
 
-                # Calculate the expected future rewards
-                real_expected_future_rewards = q_values_from_main_network.numpy()  # Initialize with current Q-values from main network and convert to numpy array
-                real_expected_future_rewards[range(batch_size), actions] = rewards + (1 - dones) * gamma * max_q_values_of_next_states
-                print("\n===> [Training]: Q values from main network, after updating the taken action with real expected future reward: =====>\n")
-                print(real_expected_future_rewards)
+                    next_tasks_tensor = tf.convert_to_tensor(next_tasks, dtype=tf.float32)
+                    next_devices_tensor = tf.convert_to_tensor(next_devices, dtype=tf.float32)
 
-                # Train the DQN
-                with tf.GradientTape() as tape:
-                    q_values = dqn([tasks_tensor, devices_tensor])
-                    loss = tf.keras.losses.mean_squared_error(real_expected_future_rewards, q_values)
-                grads = tape.gradient(loss, dqn.trainable_variables)
-                optimizer.apply_gradients(zip(grads, dqn.trainable_variables))
+                    # Calculate Q-values from the main network
+                    q_values_from_main_network = dqn([tasks_tensor,devices_tensor])  # Initialize targets with current Q-values (shape is: batch_size, 1, num_actions)
+                    q_values_from_main_network = tf.reshape(q_values_from_main_network, (batch_size, env.action_space.n)) # Reshaping the EagerTensor
+                    print("\n===> [Training]: Q values from main network by passing a batch of experiances: =====>\n")
+                    print(q_values_from_main_network[0])
+                    # print(q_values_from_main_network[1][7])
+
+                    # Get Q-values from target network
+                    q_values_from_target_network = target_dqn([next_tasks_tensor, next_devices_tensor])
+                    q_values_from_target_network = tf.reshape(q_values_from_target_network, (batch_size, env.action_space.n)) # Reshaping the EagerTensor
+                    print("\n===> [Training]: Q values from target network by passing a batch of experiances: =====>\n")
+                    print("q_values_from_target_network[1]: ",q_values_from_target_network[1])
+                    # print("q_values_from_target_network[2]: ",q_values_from_target_network[2])
+
+
+                    # Calculate the maximum Q-values of the next states (from the target network)
+                    max_q_values_of_next_states = np.max(q_values_from_target_network, axis=1)
+                    print("\n===> [Training]: Max Q values from target network by passing a batch of experiances: =====>\n")
+                    print(max_q_values_of_next_states)
+
+                    # Calculate the expected future rewards
+                    real_expected_future_rewards = q_values_from_main_network.numpy()  # Initialize with current Q-values from main network and convert to numpy array
+                    real_expected_future_rewards[range(batch_size), actions - 1] = rewards + (1 - dones) * gamma * max_q_values_of_next_states
+                    print("\n===> [Training]: Q values from main network, after updating the taken action with real expected future reward: =====>\n")
+                    print(real_expected_future_rewards)
+
+                    # Train the DQN
+                    with tf.GradientTape() as tape:
+                        q_values = dqn([tasks_tensor, devices_tensor])
+                        loss = tf.keras.losses.mean_squared_error(real_expected_future_rewards, q_values)
+                        grads = tape.gradient(loss, dqn.trainable_variables)
+                        optimizer.apply_gradients(zip(grads, dqn.trainable_variables))
+
+                        losses.append(np.mean(loss[0].numpy()))
 
     # Periodically update the target network
     if episode % 10 == 0:
+        print("\n===> [Training]: Updating the target network weights with the main network weights ========= \n")
         target_dqn.set_weights(dqn.get_weights()) 
+
+# plot the losses
+print("\n===> [Training]: Plotting the losses ========= \n")
+print(losses)
+
+# import matplotlib.pyplot as plt
+# plt.plot(losses)
+# plt.xlabel('Training Steps')
+# plt.ylabel('Loss')
+# plt.show()
+
+
+# save the model
+print("\n===> [Training]: Saving the model ========= \n")
+dqn.save('./dqn_model.keras')
+
+print("\n===> [Training]: Model saved successfully ========= \n")
+dqn.save('./dqn_model.h5')
+
+# load the model
+print("\n===> [Training]: Loading the model ========= \n")
+model = keras.models.load_model('dqn_model.h5')
+

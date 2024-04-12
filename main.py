@@ -3,6 +3,8 @@ import gymnasium as gym
 from gymnasium import spaces
 import pandas as pd
 import random
+from keras.models import load_model
+
 
 from WarehouseEnv_V0 import WarehouseEnv
 env = WarehouseEnv()
@@ -43,6 +45,7 @@ done = False
 time_step = -1
 
 time_step_records = pd.DataFrame(columns=['time_step', 'remaining_tasks', 'free_agents', 'free_devices'])
+task_completion_records = pd.DataFrame(columns=['time_step', 'pick', 'repl', 'put', 'load'])
 while not done:
     time_step = time_step + 1
 
@@ -65,6 +68,15 @@ while not done:
                     )
     time_step_records = pd.concat([time_step_records, time_step_rec], ignore_index=True)
 
+    # Tract remaining task types at each time step and track them in task_completion_records
+    remaining_pick_tasks = sum(task[env.TASK_TYPE] == env.PICK for task in env.tasks if task[env.TASK_STATUS] == env.AVAILABLE)
+    remaining_repl_tasks = sum(task[env.TASK_TYPE] == env.REPL for task in env.tasks if task[env.TASK_STATUS] == env.AVAILABLE)
+    remaining_put_tasks = sum(task[env.TASK_TYPE] == env.PUT for task in env.tasks if task[env.TASK_STATUS] == env.AVAILABLE)
+    remaining_load_tasks = sum(task[env.TASK_TYPE] == env.LOAD for task in env.tasks if task[env.TASK_STATUS] == env.AVAILABLE)
+    task_completion_rec = pd.DataFrame([[time_step, remaining_pick_tasks, remaining_repl_tasks, remaining_put_tasks, remaining_load_tasks]], columns=task_completion_records.columns)
+    task_completion_records = pd.concat([task_completion_records, task_completion_rec], ignore_index=True)
+
+    print(f"\n=====> [main] : start of time step: {time_step}")
     for index, agent in env.agents.iterrows():
         agent_id = agent['agent_id']
 
@@ -79,22 +91,28 @@ while not done:
             # if agent is doing a task, then send the current task (action) but with updated time step to the step function
             next_state, reward, done, truncated, info = env.step(agent_id, current_action, time_step)
 
-
-            # # update the task report
-            # task_report.loc[task_report["task_id"] == agent['current_task'], "end_time"] = time_step
-            # task_report.loc[task_report["task_id"] == agent['current_task'], "task_status"] = env.DONE
-
-            # # update the agent activity report
-            # agent_activity_report.loc[agent_activity_report["agent_id"] == agent['agent_id'], "end_time"] = time_step
-
-        # if agent is available, do an observation and take an action (select a task)
         else:
+            # if agent is available, do an observation, decide on an action (select a task) and do it on env
             # get the observation for the agent
             print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] is free and hence getting the observation at time step: {time_step}")
             obs = env.get_observation()
 
             # Choose and action based on the observation (POLICY)
-            action =  choose_random_action(obs['tasks'])  # this is where we should put out model (i.e give the obs, and get an action to do)
+            # if agent uses dqn model (as policy) to choose an action use it here
+            if agent_id in env.DQN_AGENTS:
+                # load the keras dqn model called dqn_model.keras and use it to choose an action
+                model = load_model('dqn_model.keras')
+
+                # prepare the observation for the model
+                # Extend devices with dummy not usable devices. This is needed so that we can input to the model.
+                    # note that here devices means a batch of devices lists (i.e this is a 3D list)
+                for device_list in obs['devices']: # Loop through the 3D list
+                    for i in range(len(device_list) + 1, env.action_space.n + 1):
+                        new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
+                        device_list.append(new_inner_list)
+            else:
+                action =  choose_random_action(obs['tasks'])  # this is where we should put out model (i.e give the obs, and get an action to do)
+            
             if action is None:
                 print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] could not find any available tasks to do at time step: {time_step}, hence skipping to next agent\n")
                 continue
@@ -104,13 +122,6 @@ while not done:
             # do the action on environment and get the next state, reward, done, truncated and info
             next_state, reward, done, truncated, info = env.step(agent_id, action, time_step)
 
-
-            # add entries to the task report and agent activity report
-            # task_new_record = pd.DataFrame([[action, env.agents.loc[index,'agent_id'], device_id, env.ACTIVE, env.tasks[task_index][env.TASK_TIME], time_step, None]], columns=task_report.columns)
-            # task_report = pd.concat([task_report, task_new_record], ignore_index=True)
-
-            # agent_activity_new_record = pd.DataFrame([[env.agents.loc[index,'agent_id'], action, device_id, time_step, None]], columns=agent_activity_report.columns)
-            # agent_activity_report = pd.concat([agent_activity_report, agent_activity_new_record], ignore_index=True)
 
 print("Simulation done!")
 print("Task report:")
@@ -162,6 +173,19 @@ plt.xlabel("Time Step")
 plt.ylabel("Count")
 plt.title("Time Step Records")
 plt.legend()
+
+
+# plot the task completion records
+plt.figure()
+plt.plot(task_completion_records["time_step"], task_completion_records["pick"], label="Pick Tasks")
+plt.plot(task_completion_records["time_step"], task_completion_records["repl"], label="Repl Tasks")
+plt.plot(task_completion_records["time_step"], task_completion_records["put"], label="Put Tasks")
+plt.plot(task_completion_records["time_step"], task_completion_records["load"], label="Load Tasks")
+plt.xlabel("Time Step")
+plt.ylabel("Count")
+plt.title("Task Completion Timeline")
+plt.legend()
+
 plt.show()
 
 

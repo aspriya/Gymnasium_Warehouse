@@ -117,6 +117,11 @@ class WarehouseEnv(gym.Env):
     WIDTH = 1024
     HEIGHT = 768
 
+    # Right Stat Box properties
+    R_STAT_BOX_WIDTH = 400
+    R_STAT_BOX_X = WIDTH - R_STAT_BOX_WIDTH  # Position the box at right side
+
+
     DEVICES_DEFAULT_LOCATION_START_Y = 10
     DEVICES_DEFAULT_LOCATION_START_X = 10
 
@@ -149,6 +154,18 @@ class WarehouseEnv(gym.Env):
     LOCATION_HEIGHT = 50
 
     STEP_DURATION = 1
+
+    # colors
+    GRAY = (128, 128, 128)
+    WHITE = (255, 255, 255)
+    BLACK = (0, 0, 0)
+    RED = (255, 0, 0)
+    GREEN = (0, 255, 0)
+    BLUE = (0, 0, 255)
+
+    # dqn policy agents
+    DQN_AGENTS = [2]
+
 
     def encode_tasks_and_devices(self, tasks, devices):
         # encode the tasks df
@@ -392,38 +409,193 @@ class WarehouseEnv(gym.Env):
         """
 
         # initialize observations
+        self.time_step = 0 # starting time step of the env
+        # make sure to update this value from your main file (if you need to track it in the env too)
 
-        tasks = pd.read_csv('tasks.csv')
-        devices = pd.read_csv('devices.csv')
+        # The action of a agent is selecting a task_id to do.
+        # So, action state can be a large number. That means the number of available tasks 
+        # can be anything which will be provided in tasks list. 
 
-        # if number of devices is less than number of tasks, we need to increase the number of devices to match the number of tasks.
-        # make the new devices all not available and device id 99 
-        if len(devices) < len(tasks):
-            new_devices = pd.DataFrame([[99, 'not_a_device', 'active', 999] for _ in range(len(tasks) - len(devices))], columns=["device_id", "type", "status", "current_task_id"])
-            devices = pd.concat([devices, new_devices], ignore_index=True)
+        # initialize Pygame
+        pygame.init()
+        self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
 
-        print("==>[from env - reset]: devices: ", devices)
+        # read the tasks and devices from csv files
+        tasks_df = pd.read_csv('tasks.csv')
+        devices_df = pd.read_csv('devices.csv')
 
-        task_list, device_list = self.encode_tasks_and_devices(tasks, devices)
 
+        # encode the tasks and devices
+        task_list, device_list = self.encode_tasks_and_devices(tasks_df, devices_df)
+
+        # following are the observations that an agent will see from the env at the begining.
+        self.tasks = task_list # an observation
+        self.devices = device_list # an observation
+
+        self.action_space = spaces.Discrete(len(tasks_df)); # assuming at a given time max number of actions is 100.
+
+        ####################################
+        #### Rendering Related Details #####
+        ####################################
+        # For rendering, its easier maintain live warehoue activities, agent and device default locations in data frames like below
+        agents = pd.read_csv('agents.csv')
         
-        self.tasks = task_list # Initialize or reset the task_list to its starting state. 
-                                # Likely, all tasks would have the status "Available".
+        agent_type_encodings = {"human": self.HUMAN, "robot": self.ROBOT}
+        agents["type"] = agents["type"].map(agent_type_encodings)
+
+        agent_status_encoding = {"available": self.AGENT_AVAILABLE, "active": self.AGENT_ACTIVE}
+        agents["status"] = agents["status"].map(agent_status_encoding)
+
+        self.agents = agents
+
+        # calculate agent default locations
+        agent_locations = pd.DataFrame(columns=['agent_id', 'type', 'default_loc_X', 'default_loc_Y', 'top_left_X', 'top_left_Y'])
+        for index, agent in agents.iterrows():
+            agent_id = agent['agent_id']
+            agent_type = agent['type']
+
+            top_left_X = self.AGENTS_DEFAULT_LOCATION_START_X + \
+            (index * (self.WORKER_WIDTH + self.SPACE_BETWEEN_AGENTS) if agent['type'] == self.HUMAN \
+             else (index * (self.ROBOT_WIDTH + self.SPACE_BETWEEN_AGENTS)))
+            
+            top_left_Y = self.AGENTS_DEFAULT_LOCATION_START_Y
+
+            # construct a df and concat it with agent_locations
+            # at the begining, the default location and the top_left location are the same
+            locations_rec = pd.DataFrame([[agent_id, agent_type, top_left_X, top_left_Y, top_left_X, top_left_Y]], columns=agent_locations.columns)
+            agent_locations = pd.concat([agent_locations, locations_rec], ignore_index=True)
+
+        self.agent_locations = agent_locations
+
+        # calculate device default locations
+        device_locations = pd.DataFrame(columns=['device_id', 'type', 'default_loc_X', 'default_loc_Y', 'top_left_X', 'top_left_Y'])
+        for index, device in devices_df.iterrows():
+            device_id = device['device_id']
+            device_type = device['type']
+
+            top_left_X = self.DEVICES_DEFAULT_LOCATION_START_X + \
+            (index * (self.FORKLIFT_WIDTH + self.SPACE_BETWEEN_AGENTS) if device['type'] == self.FORKLIFT \
+             else (index * (self.PALLET_JACK_WIDTH + self.SPACE_BETWEEN_AGENTS)))
+            
+            top_left_Y = self.DEVICES_DEFAULT_LOCATION_START_Y
+
+            # construct a df and concat it with device_locations
+            # at the begining, the default location and the top_left location are the same
+            locations_rec = pd.DataFrame([[device_id, device_type, top_left_X, top_left_Y, top_left_X, top_left_Y]], columns=device_locations.columns)
+            device_locations = pd.concat([device_locations, locations_rec], ignore_index=True)
         
-        self.devices = device_list
+        self.device_locations = device_locations
+        
+        # The live locations of agents and devices
+        warehouse_now = pd.DataFrame(columns=['agent_id', 'task_id', 'device_id', 'agent_loc', 'device_loc'])
+        for index, agent in agents.iterrows():
+            agent_id = agent['agent_id']
+            task_id = None
+            device_id = None
+            agent_loc = agent_locations[agent_locations['agent_id'] == agent_id]
+            device_loc = None
+            
+            # construct a df and concat it with warehouse_now
+            locations_rec = pd.DataFrame([[agent_id, task_id, device_id, agent_loc, device_loc]], columns=warehouse_now.columns)
+            warehouse_now = pd.concat([warehouse_now, locations_rec], ignore_index=True)
+        
+        self.warehoue_now = warehouse_now 
 
-        # the whole observation object:
-        observation = {
-            "tasks": np.array(task_list),
-            "devices": np.array(device_list)
-        }
+        # getting all different shelf locations based on provided task list (tasks.csv)
+        locations = [task[self.TASK_FROM_LOC] for task in self.tasks]
+        locations.extend([task[self.TASK_TO_LOC] for task in self.tasks])
+        locations = list(set(locations)) # remove duplicates and get unique locations
+        locations.sort() # sort the locations
+        self.locations = locations
 
-        info = {
-            "tasks": self.tasks,
-            "devices": self.devices  
-        }
+        # left locations are odd numbers and right locations are even numbers
+        locations_left = [loc for loc in locations if loc % 2 != 0]
+        locations_right = [loc for loc in locations if loc % 2 == 0]
+        self.locations_left = locations_left
+        self.locations_right = locations_right
 
-        return (observation, info)
+        # shelf locations
+        shelf_locations = pd.DataFrame(columns=['location_id', 'X', 'Y', 'left_or_right'])
+        for index, loc in enumerate(self.locations_left):
+            x = self.LOCATIONS_LEFT_START_X
+            y = self.LOCATIONS_LEFT_START_Y + (index * self.LOCATION_HEIGHT)
+
+            self_location_rec = pd.DataFrame([[loc, x, y, 'left']], columns=shelf_locations.columns)
+            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
+
+        for index, loc in enumerate(self.locations_right):
+            x = self.LOCATIONS_RIGHT_START_X
+            y = self.LOCATIONS_RIGHT_START_Y + (index * self.LOCATION_HEIGHT)
+
+            self_location_rec = pd.DataFrame([[loc, x, y, 'right']], columns=shelf_locations.columns)
+            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
+        
+        print("==>[from env - __init__]: shelf_locations: \n", shelf_locations)
+        self.shelf_locations = shelf_locations    
+
+        ####################################
+        ####      EPISODE REPORTS      #####
+        #################################### 
+        # A dataframe to store the task started time, who did it and when it is done
+        # this will be used to create a report and visualize the performance of the agents
+        task_report = pd.DataFrame(columns=["task_id", "agent_id", "device_id", "task_time", "start_time", "end_time"])
+        self.task_report = task_report
+        
+
+        ####################################
+        ####     OBSERVATION SPACE     #####
+        ####################################
+        # OBSERVATIONS FROM ENV ARE: warehouse tasks, devices
+        # Warehouse Tasks
+        self.task_shape = (len(self.tasks), 8)  # Adjust if you have more task attributes
+        self.task_low = np.array([[
+            0,  # Task_Id (assume non-negative integers)
+            0,  # Type (categorical)
+            0,  # Product
+            0,  # From Location
+            0,  # To Location
+            0,  # Time (might be a float)
+            0,  # Order No
+            0   # Status (categorical)
+        ] for _ in range(len(tasks_df))])
+        self.task_high = np.array([[
+            100,  # Task_Id, maximum task id
+            3,  # Task Type (if categorical, maximum category value). 3 since we start from 0. so there are four types
+            100,  # Product
+            100,  # From Location 
+            100,  # To Location
+            60,   # Time (if assuming a 24-hour window) 
+            100,  # Order No
+            2   # Status  (0 - available, 1 - active, 2 - done)
+        ] for _ in range(len(tasks_df))])
+
+        # Warehouse Devices
+        self.device_shape = (len(self.devices),3)  # Adjust if you have more device attributes
+        self.device_low = np.array([[
+            0,  # Device_Id
+            0,  # Type 
+            0,   # Status
+            0, # current_task_id
+        ] for _ in range(len(devices_df))])
+        self.device_high = np.array([[
+            100,  # Device_Id
+            2,  # Type (0-pallet_jack, 1-forklift, 2-not_a_device)
+            1,  # Status (0-available, 1-active)
+            999 # current_task_id (999 means no task assigned)
+        ] for _ in range(len(devices_df))])
+
+        # print(self.task_low)
+
+        # Combining spaces using dictionaries
+        self.observation_space = spaces.Dict({
+            'tasks': spaces.Box(low=self.task_low, high=self.task_high, shape=np.array(self.tasks).shape, dtype=np.int32),
+            'devices': spaces.Box(low=self.device_low, high=self.device_high, shape=np.array(self.devices).shape, dtype=np.int32),
+        })
+
+
+        info = {} # additional information
+
+        return (self.observation_space, info)
 
 
     def step(self, agent, action, time_step=0):
@@ -438,7 +610,7 @@ class WarehouseEnv(gym.Env):
         reward = 0 # step reward
 
         # Here, an action will be a task_id and based on task status we can return a reward.
-        print(f"\n=======> [from env - step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} at Time Step: {time_step}")
+        print(f"\n=======> [from env - step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} with device: {agent_current_device} at Time Step: {time_step}")
 
 
         # check if agent is still active (doing a task)
@@ -540,7 +712,7 @@ class WarehouseEnv(gym.Env):
                 self.devices[agent_current_device - 1][self.DEVICE_STATUS] = self.AVAILABLE
                 self.devices[agent_current_device - 1][self.DEVICE_CURRENT_TASK_ID] = -1
 
-                print(f"=======> [from env - step]: agent is in {self.AGENT_AVAILABLE} state at time step {time_step}")
+                print(f"=======> [from env - step]: agent is now in {self.AGENT_AVAILABLE} state at time step {time_step}")
         else: # If the agent is Available (FREE to take up the suggested task)
             # REWARD CALCULATION
             if action > len(self.tasks):
@@ -764,74 +936,153 @@ class WarehouseEnv(gym.Env):
         worker = pygame.transform.scale(worker, (self.WORKER_WIDTH, self.WORKER_HEIGHT))
         worker_rect = worker.get_rect()
 
+        worker_dqn = pygame.image.load("warehouse_worker_dqn.png")
+        worker_dqn = pygame.transform.scale(worker_dqn, (self.WORKER_WIDTH, self.WORKER_HEIGHT))
+        worker_dqn_rect = worker_dqn.get_rect()
+
         robot = pygame.image.load("selector_robot.png")
         robot = pygame.transform.scale(robot, (self.ROBOT_WIDTH, self.ROBOT_HEIGHT))
         robot_rect = robot.get_rect()
 
+        robot_dqn = pygame.image.load("selector_robot_dqn.png")
+        robot_dqn = pygame.transform.scale(robot_dqn, (self.ROBOT_WIDTH, self.ROBOT_HEIGHT))
+        robot_dqn_rect = robot_dqn.get_rect()
+
         # render workers
         for index, agent in self.agent_locations.iterrows():
             if agent['type'] == self.HUMAN:
-                worker_rect.x = agent['top_left_X']
-                worker_rect.y = agent['top_left_Y']
-                self.screen.blit(worker, worker_rect)
+                # if agent is a dqn policy agent, use worker_dqn_rect
+                if agent['agent_id'] in self.DQN_AGENTS:
+                    worker_dqn_rect.x = agent['top_left_X']
+                    worker_dqn_rect.y = agent['top_left_Y']
+                    self.screen.blit(worker_dqn, worker_dqn_rect)
+                else:
+                    worker_rect.x = agent['top_left_X']
+                    worker_rect.y = agent['top_left_Y']
+                    self.screen.blit(worker, worker_rect)
         
         # render robots
         for index, agent in self.agent_locations.iterrows():
             if agent['type'] == self.ROBOT:
-                robot_rect.x = agent['top_left_X']
-                robot_rect.y = agent['top_left_Y']
-                self.screen.blit(robot, robot_rect)
+                # if agent is a dqn policy agent, use robot_dqn_rect
+                if agent['agent_id'] in self.DQN_AGENTS:
+                    robot_dqn_rect.x = agent['top_left_X']
+                    robot_dqn_rect.y = agent['top_left_Y']
+                    self.screen.blit(robot_dqn, robot_dqn_rect)
+                else:
+                    robot_rect.x = agent['top_left_X']
+                    robot_rect.y = agent['top_left_Y']
+                    self.screen.blit(robot, robot_rect)
     
     # render stats
     def _render_stats(self):
-        # show time step
-        font = pygame.font.Font(None, 24)
-        text = font.render(f"Time Step: {self.time_step}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y))
+
+        stat_left_column_X = self.R_STAT_BOX_X + 10
+        stat_right_column_X = self.R_STAT_BOX_X + 200
+
+        # draw R_STAT_BOX
+        pygame.draw.rect(self.screen, self.GRAY, (self.R_STAT_BOX_X, 0, self.R_STAT_BOX_WIDTH, self.HEIGHT))
 
         # show total task number
+        font = pygame.font.Font(None, 28)
+        text = font.render(f"Tasks: {len(self.tasks)}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y))
+
+        # number of pick tasks
         font = pygame.font.Font(None, 24)
-        text = font.render(f"Total Tasks: {len(self.tasks)}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 20))
+        num_pick_tasks = len([task for task in self.tasks if task[self.TASK_TYPE] == self.PICK])
+        text = font.render(f"Pick Tasks: {num_pick_tasks}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 40))
 
-        # show remaining tasks
-        num_available_tasks = len([task for task in self.tasks if task[self.TASK_STATUS] == self.AVAILABLE])
-        text = font.render(f"Remaining Tasks: {num_available_tasks}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 40))
+        # number of repln tasks
+        num_repln_tasks = len([task for task in self.tasks if task[self.TASK_TYPE] == self.REPL])
+        text = font.render(f"Replenish Tasks: {num_repln_tasks}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 80))
 
-        # show total device number
+        # number of put tasks
+        num_put_tasks = len([task for task in self.tasks if task[self.TASK_TYPE] == self.PUT])
+        text = font.render(f"Put Tasks: {num_put_tasks}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 120))
+
+        # number of load tasks
+        num_load_tasks = len([task for task in self.tasks if task[self.TASK_TYPE] == self.LOAD])
+        text = font.render(f"Load Tasks: {num_load_tasks}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 160))
+
+
+        # Show Total Devices and Device type counts in right column
+        font = pygame.font.Font(None, 28)
+        text = font.render(f"Devices: {len(self.devices)}", True, self.WHITE)
+        self.screen.blit(text, (stat_right_column_X, self.LOCATIONS_RIGHT_START_Y))
+
+        # number of pallet jacks
         font = pygame.font.Font(None, 24)
-        text = font.render(f"Total Devices: {len(self.devices)}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 60))
+        num_pallet_jacks = len([device for device in self.devices if device[self.DEVICE_TYPE] == self.PALLET_JACK])
+        text = font.render(f"Pallet Jacks: {num_pallet_jacks}", True, self.WHITE)
+        self.screen.blit(text, (stat_right_column_X, self.LOCATIONS_RIGHT_START_Y + 40))
 
-        # show available devices
-        num_available_devices = len([device for device in self.devices if device[self.DEVICE_STATUS] == self.AVAILABLE])
-        text = font.render(f"Free Devices: {num_available_devices}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 80))
+        # number of forklifts
+        num_forklifts = len([device for device in self.devices if device[self.DEVICE_TYPE] == self.FORKLIFT])
+        text = font.render(f"Forklifts: {num_forklifts}", True, self.WHITE)
+        self.screen.blit(text, (stat_right_column_X, self.LOCATIONS_RIGHT_START_Y + 80))
 
-        # show free pallet jacks
-        num_available_pallet_jacks = len([pj for pj in self.devices if pj[self.DEVICE_STATUS] == self.AVAILABLE and pj[self.DEVICE_TYPE] == self.PALLET_JACK])
-        text = font.render(f"Free Pallet Jacks: {num_available_pallet_jacks}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 100))
+        # Draw a horizontal line at the end of task stats with a width of stat box
+        pygame.draw.line(self.screen, self.WHITE, (self.R_STAT_BOX_X, self.LOCATIONS_RIGHT_START_Y + 200), \
+                         (self.R_STAT_BOX_X + self.R_STAT_BOX_WIDTH, self.LOCATIONS_RIGHT_START_Y + 200), 2)
+        
 
-        # show free forklifts
-        num_available_forklifts = len([fk for fk in self.devices if fk[self.DEVICE_STATUS] == self.AVAILABLE and fk[self.DEVICE_TYPE] == self.FORKLIFT])
-        text = font.render(f"Free Forklifts: {num_available_forklifts}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 120))
+        # Show Agent Stats and Agent type counts in left column after the above horizontal line
+        font = pygame.font.Font(None, 28)
+        text = font.render(f"Agents: {len(self.agents)}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 220))
 
-        # show agents
-        num_agents = len(self.agents)
-        text = font.render(f"Total Agents: {num_agents}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 140))
+        # number of human agents
+        font = pygame.font.Font(None, 24)
+        num_human_agents = len(self.agents.query(f'type == {self.HUMAN}'))
+        text = font.render(f"Humans: {num_human_agents}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 260))
 
-        # show free agents
+        # number of robot agents
+        num_robot_agents = len(self.agents.query(f'type == {self.ROBOT}'))
+        text = font.render(f"Robots: {num_robot_agents}", True, self.WHITE)
+        self.screen.blit(text, (stat_right_column_X, self.LOCATIONS_RIGHT_START_Y + 260))
+
+        # Draw a horizontal line at the end of agent stats with a width of stat box
+        pygame.draw.line(self.screen, self.WHITE, (self.R_STAT_BOX_X, self.LOCATIONS_RIGHT_START_Y + 300), \
+                         (self.R_STAT_BOX_X + self.R_STAT_BOX_WIDTH, self.LOCATIONS_RIGHT_START_Y + 300), 2)
+        
+
+        # Show Dynamic Statas like number of reamining (available) tasks to do, number of free devices, number of free agents
+        font = pygame.font.Font(None, 28)
+        num_remaining_tasks = len([task for task in self.tasks if task[self.TASK_STATUS] == self.AVAILABLE])
+        text = font.render(f"Remaining Tasks: {num_remaining_tasks}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 320))
+
+        num_free_devices = len([device for device in self.devices if device[self.DEVICE_STATUS] == self.AVAILABLE])
+        text = font.render(f"Free Devices: {num_free_devices}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 360))
+
         num_free_agents = self.agents.query(f"status == {self.AGENT_AVAILABLE}").shape[0]
-        text = font.render(f"Free Agents: {num_free_agents}", True, (0, 0, 0))
-        self.screen.blit(text, (self.WIDTH - 200, self.LOCATIONS_RIGHT_START_Y + 160))
+        text = font.render(f"Free Agents: {num_free_agents}", True, self.WHITE)
+        self.screen.blit(text, (stat_right_column_X, self.LOCATIONS_RIGHT_START_Y + 360))
+
+        # Draw a horizontal line at the end of dynamic stats with a width of stat box
+        pygame.draw.line(self.screen, self.WHITE, (self.R_STAT_BOX_X, self.LOCATIONS_RIGHT_START_Y + 400), \
+                         (self.R_STAT_BOX_X + self.R_STAT_BOX_WIDTH, self.LOCATIONS_RIGHT_START_Y + 400), 2)
+        
+        # show the time step after about line and at the center of stat box
+        font = pygame.font.Font(None, 28)
+        text = font.render(f"Time Step", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X, self.LOCATIONS_RIGHT_START_Y + 420))
+
+        font = pygame.font.Font(None, 38)
+        text = font.render(f"{self.time_step}", True, self.WHITE)
+        self.screen.blit(text, (stat_left_column_X + self.R_STAT_BOX_WIDTH / 4, self.LOCATIONS_RIGHT_START_Y + 418))
+
 
    
     def _render_pygame(self):
-        self.screen.fill((255, 255, 255)) # fill the screen with white color
+        self.screen.fill(self.WHITE) # fill the screen with white color
         self._render_locations() # locations means shelves (these are static - i.e does not move)
         self._render_devices()
         self._render_agents()
