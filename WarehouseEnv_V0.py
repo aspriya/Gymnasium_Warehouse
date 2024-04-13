@@ -65,8 +65,8 @@ class WarehouseEnv(gym.Env):
     metadata = {'render.modes': ['console']}
 
     # Define constants for clear code
-    REST = 0
-    ACTIVE = 1
+    REST = 1
+    ACTIVE = -1
 
     #task_list_columns
     TASK_ID = 0
@@ -79,15 +79,15 @@ class WarehouseEnv(gym.Env):
     TASK_STATUS = 7
 
     # Task types
-    PICK = 0
-    PUT = 1
-    LOAD = 2
-    REPL = 3
+    PICK = 1
+    PUT = 2
+    LOAD = 3
+    REPL = 4
 
     # task / device status
-    AVAILABLE = 0
-    ACTIVE = 1
-    DONE = 2
+    AVAILABLE = 1
+    ACTIVE = -1
+    DONE = 0
 
     # DEVICE COLUMNS
     DEVICE_ID = 0
@@ -96,9 +96,9 @@ class WarehouseEnv(gym.Env):
     DEVICE_CURRENT_TASK_ID = 3
 
     # DEVICE TYPE
-    PALLET_JACK = 0
-    FORKLIFT = 1
-    NOT_A_DEVICE = 2
+    PALLET_JACK = 1
+    FORKLIFT = 2
+    NOT_A_DEVICE = 3
 
     # agent_columns
     AGENT_ID = 0
@@ -106,12 +106,12 @@ class WarehouseEnv(gym.Env):
     AGENT_STATUS = 2
 
     # agent type encodings
-    HUMAN = 0
-    ROBOT = 1
+    HUMAN = 1
+    ROBOT = 2
 
     # agent status encodings
-    AGENT_AVAILABLE = 0
-    AGENT_ACTIVE = 1
+    AGENT_AVAILABLE = 1
+    AGENT_ACTIVE = -1
 
     # pygame width, height and other attributes
     WIDTH = 1024
@@ -153,7 +153,7 @@ class WarehouseEnv(gym.Env):
     LOCATION_WIDTH = 50
     LOCATION_HEIGHT = 50
 
-    STEP_DURATION = 1
+    STEP_DURATION = 0
 
     # colors
     GRAY = (128, 128, 128)
@@ -610,7 +610,7 @@ class WarehouseEnv(gym.Env):
         reward = 0 # step reward
 
         # Here, an action will be a task_id and based on task status we can return a reward.
-        print(f"\n=======> [from env - step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} with device: {agent_current_device} at Time Step: {time_step}")
+        print(f"=======> [from env - step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} with device: {agent_current_device} at Time Step: {time_step}")
 
 
         # check if agent is still active (doing a task)

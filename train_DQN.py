@@ -67,14 +67,14 @@ HUMAN = 0
 ROBOT = 1
 
 # agent status encodings
-AVAILABLE = 0
-ACTIVE = 1
+AVAILABLE = 1
+ACTIVE = -1
 
 # Helper function to choose an action based on the current state
 # Helper function to choose an action based on the current state
 def choose_random_action(tasks):
     # Choose an random task (action). But this task should be an available task
-    available_tasks = [x for x in tasks if x[env.TASK_STATUS] == 0]  # Filter tasks with status 0 (available)
+    available_tasks = [x for x in tasks if x[env.TASK_STATUS] == env.AVAILABLE]  # Filter tasks with status 0 (available)
     available_task_ids = [sublist[0] for sublist in available_tasks]
 
     if len(available_task_ids) > 0:
@@ -119,50 +119,46 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # Define Input Shapes (Adjust based on your exact features)
     # ------------------
     task_input_shape = tasks_shape  # 2D tensor (num_tasks, 8). 8 means number of features of each task
-    device_input_shape = devices_shape  # 2D tensor (num_devices, 4). 4 means number of features of each device
-
-    # make sure task_input_shape and device_input_shape are compatible to be concatenated
-    if device_input_shape[0] < task_input_shape[0]:
-        print('\n==>[creating DQN model]: Number of tasks and devices should match for concatenation. So increasing number of devices to match number of tasks\n')
-        device_input_shape = (task_input_shape[0], device_input_shape[1])
-        print('==>[creating DQN model]: After increasing, tasks_shape:', task_input_shape, 'devices_shape:', device_input_shape, 'num_actions:', num_actions, '\n')
+    # device_input_shape = devices_shape  # 2D tensor (num_devices, 4). 4 means number of features of each device
 
     # ------------------
     # Define Input Layers
     # ------------------
     task_input = Input(shape=task_input_shape) # 
-    device_input = Input(shape=device_input_shape) 
+    # device_input = Input(shape=device_input_shape) 
 
     # ------------------
     # Initial Task Processing 
     # ------------------
-    task_x = Dense(32, activation='relu')(task_input)  # Adjust layers as needed
-    task_x = Dense(16, activation='relu')(task_x)
+    task_x = Dense(10, activation='relu')(task_input)  # Adjust layers as needed
+    # task_x = Dense(100, activation='relu')(task_x)
 
     # ------------------
     # Initial Device Processing
     # ------------------
-    device_x = Dense(16, activation='relu')(device_input)  # Adjust layers as needed
+    # device_x = Dense(16, activation='relu')(device_input)  # Adjust layers as needed
 
     # ------------------
     # Combine processed Information
     # ------------------
-    combined = Concatenate()([task_x, device_x])
+    # combined = Concatenate()([task_x, device_x])
 
     # ------------------
     # Combined Decision Layers
     # ------------------ 
-    x = Dense(32, activation='relu')(combined) 
+    # x = Dense(32, activation='relu')(combined) 
 
     # ------------------
     # One layer after the combined decision layers
     # ------------------
-    x1 = Dense(16, activation='relu')(x)
+    # x1 = Dense(100, activation='relu')(task_x)  # Adjust layers as needed
 
     # ------------------
     # Flatten the combined input before the output layer
     # ------------------
-    flattened_x1 = Reshape((1, 16 * num_actions))(x1)  # Flatten the input for the output layer
+    flattened_x1 = Reshape((1, 10 * num_actions))(task_x)  # Flatten the input for the output layer
+
+    # flattened_x1 = Dense(num_actions, activation='relu')(flattened_x1)  # Flatten the input for the output layer
 
     # ------------------
     # Output Layers (Adjust to match your number of tasks)
@@ -172,7 +168,7 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # ------------------
     # Instantiate the Model
     # ------------------
-    model = Model(inputs=[task_input, device_input], outputs=[task_output])
+    model = Model(inputs=[task_input], outputs=[task_output])
 
     # ------------------
     # Compile the Model 
@@ -187,8 +183,8 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
 # Training setup
 # env = gym.make("CartPole-v1")  # Create the environment
 env = WarehouseEnv()  # Create the environment
-dqn = create_dqn(env.observation_space['tasks'].shape, env.observation_space['devices'].shape, env.action_space.n)
-target_dqn = create_dqn(env.observation_space['tasks'].shape, env.observation_space['devices'].shape, env.action_space.n)
+dqn = create_dqn((60,3), env.observation_space['devices'].shape, env.action_space.n) #  None for variable number of observations
+target_dqn = create_dqn((60,3), env.observation_space['devices'].shape, env.action_space.n)
 target_dqn.set_weights(dqn.get_weights())  # Initialize target network with same weights
 
 buffer = ReplayBuffer(50000) # Initialize replay buffer with capacity of 50,000 experience samples
@@ -201,7 +197,7 @@ batch_size = 10
 training_agent_id = 2
 losses = []
 
-for episode in range(1):
+for episode in range(11):
     done = False
     total_reward = 0
     time_step = -1
@@ -246,7 +242,59 @@ for episode in range(1):
 
                 # store the experiance in the replay buffer if only the agent is the training agent
                 if agent_id == training_agent_id:
-                    buffer.store(obs, action, reward, next_state, done)
+                    # buffer.store(obs, action -1, reward, next_state, done)
+
+                    ## store only task_type, order, status
+                    task_obsveration_for_dqn = obs['tasks']
+
+                    # if task status is DONE, update all values in the task with 0
+                    for i, task in enumerate(task_obsveration_for_dqn):
+                        if task[env.TASK_STATUS] == env.DONE:
+                            task_obsveration_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0]
+
+                    task_obsveration_for_dqn = np.array(task_obsveration_for_dqn)
+                    task_obsveration_for_dqn = task_obsveration_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]]
+                    
+                    # normalize the task observation
+                    task_obsveration_for_dqn = np.array(task_obsveration_for_dqn, dtype=float)
+                    # print(data.shape[1])
+
+                    # for col_index in range(task_obsveration_for_dqn.shape[1]):
+                    #     # print(col_index)
+                    #     col = task_obsveration_for_dqn[:, col_index]
+                    #     min_val = np.min(col)
+                    #     max_val = np.max(col)
+                    #     task_obsveration_for_dqn[:, col_index] = (col - min_val) / (max_val - min_val)
+
+                    task_obsveration_for_dqn =  task_obsveration_for_dqn.tolist() # convert back to a list from a numpy array
+
+                    ### store only task_type, order, status for next_state as well
+                    next_state_task_obsveration_for_dqn = next_state['tasks']
+
+                    # if task status is not AVAILABLE, update all values in the task with 0
+                    for i, task in enumerate(next_state_task_obsveration_for_dqn):
+                        if task[env.TASK_STATUS] == env.DONE:
+                            next_state_task_obsveration_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0]
+                    
+                    next_state_task_obsveration_for_dqn = np.array(next_state_task_obsveration_for_dqn)
+                    next_state_task_obsveration_for_dqn = next_state_task_obsveration_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]]
+                    
+                    # normalize the task observation
+                    next_state_task_obsveration_for_dqn = np.array(next_state_task_obsveration_for_dqn, dtype=float)
+                    # print(data.shape[1])
+
+                    # for col_index in range(next_state_task_obsveration_for_dqn.shape[1]):
+                    #     # print(col_index)
+                    #     col = next_state_task_obsveration_for_dqn[:, col_index]
+                    #     min_val = np.min(col)
+                    #     max_val = np.max(col)
+                    #     next_state_task_obsveration_for_dqn[:, col_index] = (col - min_val) / (max_val - min_val)
+
+                    next_state_task_obsveration_for_dqn =  next_state_task_obsveration_for_dqn.tolist() # convert back to a list from a numpy array
+                
+                
+                    buffer.store(task_obsveration_for_dqn, action -1, reward, next_state_task_obsveration_for_dqn, done)
+                    # buffer.store(obs, action -1, reward, next_state, done)
                     state = next_state
                     total_reward += reward
                     ## End of experiance replay ###
@@ -261,49 +309,49 @@ for episode in range(1):
                     print("actions:", actions)
                     print("actions[0]:", actions[0])
                     
-                    # get a batch of tasks and devices
-                    tasks = [[sublist for sublist in element['tasks']] for element in states]
-                    devices = [[sublist for sublist in element['devices']] for element in states]
+                    # # get a batch of tasks and devices
+                    # tasks = [[sublist for sublist in element['tasks']] for element in states]
+                    # devices = [[sublist for sublist in element['devices']] for element in states]
 
-                    # Extend devices with dummy not usable devices. This is needed so that we can input to the model.
-                    # note that here devices means a batch of devices lists (i.e this is a 3D list)
-                    for device_list in devices: # Loop through the 3D list
-                        for i in range(len(device_list) + 1, env.action_space.n + 1):
-                            new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
-                            device_list.append(new_inner_list)
+                    # # Extend devices with dummy not usable devices. This is needed so that we can input to the model.
+                    # # note that here devices means a batch of devices lists (i.e this is a 3D list)
+                    # for device_list in devices: # Loop through the 3D list
+                    #     for i in range(len(device_list) + 1, env.action_space.n + 1):
+                    #         new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
+                    #         device_list.append(new_inner_list)
 
 
                     # get a batch of next tasks and devices
-                    next_tasks = [[sublist for sublist in element['tasks']] for element in next_states]
-                    next_devices = [[sublist for sublist in element['devices']] for element in next_states]
+                    # next_tasks = [[sublist for sublist in element['tasks']] for element in next_states]
+                    # next_devices = [[sublist for sublist in element['devices']] for element in next_states]
 
-                    # Extend next_devices with dummy not usable devices. This is needed so that we can input to the model.
-                    # note that here devices means a batch of devices lists (i.e this is a 3D list)
-                    for next_device_list in next_devices: # Loop through the 3D list
-                        for i in range(len(next_device_list) + 1, env.action_space.n + 1):
-                            new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
-                            next_device_list.append(new_inner_list)
+                    # # Extend next_devices with dummy not usable devices. This is needed so that we can input to the model.
+                    # # note that here devices means a batch of devices lists (i.e this is a 3D list)
+                    # for next_device_list in next_devices: # Loop through the 3D list
+                    #     for i in range(len(next_device_list) + 1, env.action_space.n + 1):
+                    #         new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
+                    #         next_device_list.append(new_inner_list)
 
                     print("\n===> [Training]: the first observation in the selected batch from experiances for training =====>")
-                    print("[Training]: tasks[0]:", tasks[0])
-                    print("\n[Training]: devices[0]:", devices[0])
+                    print("[Training]: tasks[0]:", states[0])
+                    # print("\n[Training]: devices[0]:", devices[0])
 
                     # Convert to TensorFlow tensors
-                    tasks_tensor = tf.convert_to_tensor(tasks, dtype=tf.float32)  # Specify float32 for common use 
-                    devices_tensor = tf.convert_to_tensor(devices, dtype=tf.float32)
+                    tasks_tensor = tf.convert_to_tensor(states, dtype=tf.float32)  # Specify float32 for common use 
+                    # devices_tensor = tf.convert_to_tensor(devices, dtype=tf.float32)
 
-                    next_tasks_tensor = tf.convert_to_tensor(next_tasks, dtype=tf.float32)
-                    next_devices_tensor = tf.convert_to_tensor(next_devices, dtype=tf.float32)
+                    next_tasks_tensor = tf.convert_to_tensor(next_states, dtype=tf.float32)
+                    # next_devices_tensor = tf.convert_to_tensor(next_devices, dtype=tf.float32)
 
                     # Calculate Q-values from the main network
-                    q_values_from_main_network = dqn([tasks_tensor,devices_tensor])  # Initialize targets with current Q-values (shape is: batch_size, 1, num_actions)
+                    q_values_from_main_network = dqn([tasks_tensor])  # Initialize targets with current Q-values (shape is: batch_size, 1, num_actions)
                     q_values_from_main_network = tf.reshape(q_values_from_main_network, (batch_size, env.action_space.n)) # Reshaping the EagerTensor
                     print("\n===> [Training]: Q values from main network by passing a batch of experiances: =====>\n")
                     print(q_values_from_main_network[0])
                     # print(q_values_from_main_network[1][7])
 
                     # Get Q-values from target network
-                    q_values_from_target_network = target_dqn([next_tasks_tensor, next_devices_tensor])
+                    q_values_from_target_network = target_dqn([next_tasks_tensor])
                     q_values_from_target_network = tf.reshape(q_values_from_target_network, (batch_size, env.action_space.n)) # Reshaping the EagerTensor
                     print("\n===> [Training]: Q values from target network by passing a batch of experiances: =====>\n")
                     print("q_values_from_target_network[1]: ",q_values_from_target_network[1])
@@ -323,7 +371,7 @@ for episode in range(1):
 
                     # Train the DQN
                     with tf.GradientTape() as tape:
-                        q_values = dqn([tasks_tensor, devices_tensor])
+                        q_values = dqn([tasks_tensor])
                         loss = tf.keras.losses.mean_squared_error(real_expected_future_rewards, q_values)
                         grads = tape.gradient(loss, dqn.trainable_variables)
                         optimizer.apply_gradients(zip(grads, dqn.trainable_variables))
@@ -334,16 +382,6 @@ for episode in range(1):
     if episode % 10 == 0:
         print("\n===> [Training]: Updating the target network weights with the main network weights ========= \n")
         target_dqn.set_weights(dqn.get_weights()) 
-
-# plot the losses
-print("\n===> [Training]: Plotting the losses ========= \n")
-print(losses)
-
-# import matplotlib.pyplot as plt
-# plt.plot(losses)
-# plt.xlabel('Training Steps')
-# plt.ylabel('Loss')
-# plt.show()
 
 
 # save the model
@@ -356,4 +394,14 @@ dqn.save('./dqn_model.h5')
 # load the model
 print("\n===> [Training]: Loading the model ========= \n")
 model = keras.models.load_model('dqn_model.h5')
+
+# plot the losses
+print("\n===> [Training]: Plotting the losses ========= \n")
+print(losses)
+
+import matplotlib.pyplot as plt
+plt.plot(losses)
+plt.xlabel('Training Steps')
+plt.ylabel('Loss')
+plt.show()
 

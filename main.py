@@ -4,6 +4,7 @@ from gymnasium import spaces
 import pandas as pd
 import random
 from keras.models import load_model
+import tensorflow as tf
 
 
 from WarehouseEnv_V0 import WarehouseEnv
@@ -22,8 +23,9 @@ class RandomAgent:
 
 # Helper function to choose an action based on the current state
 def choose_random_action(tasks):
+    print("[choosing random task]: input to choose_random_action: \n", tasks)
     # Choose an random task (action). But this task should be an available task
-    available_tasks = [x for x in tasks if x[env.TASK_STATUS] == 0]  # Filter tasks with status 0 (available)
+    available_tasks = [x for x in tasks if x[env.TASK_STATUS] == env.AVAILABLE]  # Filter tasks with status 0 (available)
     available_task_ids = [sublist[0] for sublist in available_tasks]
 
     if len(available_task_ids) > 0:
@@ -89,13 +91,17 @@ while not done:
         # if agent is not available, pass
         if agent["status"] == env.AGENT_ACTIVE:
             # if agent is doing a task, then send the current task (action) but with updated time step to the step function
+            print(f"\n===> [main - Agent-{env.agents.loc[index,'agent_id']}] is busy with task: {current_action} at time step: {time_step}")
             next_state, reward, done, truncated, info = env.step(agent_id, current_action, time_step)
 
         else:
             # if agent is available, do an observation, decide on an action (select a task) and do it on env
             # get the observation for the agent
-            print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] is free and hence getting the observation at time step: {time_step}")
+            print(f"\n===> [main - Agent-{env.agents.loc[index,'agent_id']}] is free and hence getting the observation at time step: {time_step}")
             obs = env.get_observation()
+
+            observed_tasks = obs['tasks']
+            observed_devices = obs['devices']
 
             # Choose and action based on the observation (POLICY)
             # if agent uses dqn model (as policy) to choose an action use it here
@@ -105,13 +111,57 @@ while not done:
 
                 # prepare the observation for the model
                 # Extend devices with dummy not usable devices. This is needed so that we can input to the model.
-                    # note that here devices means a batch of devices lists (i.e this is a 3D list)
-                for device_list in obs['devices']: # Loop through the 3D list
-                    for i in range(len(device_list) + 1, env.action_space.n + 1):
-                        new_inner_list = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
-                        device_list.append(new_inner_list)
+                # note that here devices means a lists of devices (i.e this is a 2D list)
+                # for i in range(len(observed_devices) + 1, env.action_space.n + 1):
+                #     new_dummy_device = [i, env.NOT_A_DEVICE, env.ACTIVE, 999]
+                #     observed_devices.append(new_dummy_device)
+
+                # convert the observed tasks and devices to numpy arrays
+                observed_tasks_for_dqn = np.array(obs['tasks'])
+                # observed_devices = np.array(observed_devices)
+
+                # if task status is Done, update all values in the task with 0
+                for i, task in enumerate(observed_tasks_for_dqn):
+                    if task[env.TASK_STATUS] == env.DONE:
+                        observed_tasks_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0]
+
+                ## store only task_id, task_type, order, status
+                observed_tasks_for_dqn = observed_tasks_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]]
+                
+                # normalize the task observation
+                observed_tasks_for_dqn = np.array(observed_tasks_for_dqn, dtype=float)
+                # print(data.shape[1])
+
+                # for col_index in range(observed_tasks_for_dqn.shape[1]):
+                #     # print(col_index)
+                #     col = observed_tasks_for_dqn[:, col_index]
+                #     min_val = np.min(col)
+                #     max_val = np.max(col)
+                #     observed_tasks[:, col_index] = (col - min_val) / (max_val - min_val)
+
+                observed_tasks_for_dqn =  observed_tasks_for_dqn.tolist() # convert back to a list from a numpy array
+
+
+                observed_tasks_for_dqn = np.expand_dims(observed_tasks_for_dqn, axis=0)  # Add the batch axis
+                # observed_devices = np.expand_dims(observed_devices, axis=0) # Add the batch axis
+
+                # convert to tensors
+                observed_tasks_for_dqn = tf.convert_to_tensor(observed_tasks_for_dqn)
+                # observed_devices = tf.convert_to_tensor(observed_devices)
+
+                # pass and get the prediction
+                print("======> [main] input to model: \n",observed_tasks_for_dqn)
+                q_values_from_main_network = model([observed_tasks_for_dqn]) 
+                print("======> [main] output from model: ",q_values_from_main_network)
+
+                # choose the action with the highest q value
+                action = np.argmax(q_values_from_main_network)
+                print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] selected the task index: {action} at time step: {time_step}")
+
+                action =  action + 1 # increment by 1 to match the task id (task ids start from 1)
+   
             else:
-                action =  choose_random_action(obs['tasks'])  # this is where we should put out model (i.e give the obs, and get an action to do)
+                action =  choose_random_action(observed_tasks)  # this is where we should put out model (i.e give the obs, and get an action to do)
             
             if action is None:
                 print(f"===> [main - Agent-{env.agents.loc[index,'agent_id']}] could not find any available tasks to do at time step: {time_step}, hence skipping to next agent\n")
