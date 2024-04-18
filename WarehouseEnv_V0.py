@@ -30,12 +30,13 @@ class WarehouseEnv(gym.Env):
     should be loaded and then provided to __init()__ after encoding.
     
     Tasks:
-    task_id | type | product | from loc | to loc | time | order | status
-    --------|------|---------|----------|--------|------|-------|-------
-    0       | pick | 2       | 3        | 4      | 5    | 6     | available
-    1       | put  | 3       | 4        | 5      | 6    | 7     | active
-    2       | load | 4       | 5        | 6      | 7    | 8     | done
-    3       | repl | 5       | 6        | 7      | 8    | 9     | available
+    task_id | type | product | qty      | from loc | to loc | time | order | status
+    --------|------|---------|----------|----------|--------|------|---------------------
+    0       | pick | 2       | 30       | 11       | 21     | 20   |  1     | available
+    1       | pick | 3       | 20       | 15       | 22     | 20   |  2     | active
+    ........|......|.......  |..........|..........|........|......|........|................
+    21      | load | 4       | 50       | 21       | 23     | 20   |        | done
+    22      | repl | 5       | 30       |  1       | 11     | 20   |  1     | available
     ....
 
     Devices:
@@ -72,11 +73,12 @@ class WarehouseEnv(gym.Env):
     TASK_ID = 0
     TASK_TYPE = 1
     TASK_PRODUCT = 2
-    TASK_FROM_LOC = 3
-    TASK_TO_LOC = 4
-    TASK_TIME = 5
-    TASK_ORDER = 6
-    TASK_STATUS = 7
+    TASK_QTY = 3
+    TASK_FROM_LOC = 4
+    TASK_TO_LOC = 5
+    TASK_TIME = 6
+    TASK_ORDER = 7
+    TASK_STATUS = 8
 
     # Task types
     PICK = 1
@@ -114,8 +116,8 @@ class WarehouseEnv(gym.Env):
     AGENT_ACTIVE = -1
 
     # pygame width, height and other attributes
-    WIDTH = 1024
-    HEIGHT = 768
+    WIDTH = 1900
+    HEIGHT = 1000
 
     # Right Stat Box properties
     R_STAT_BOX_WIDTH = 400
@@ -136,6 +138,12 @@ class WarehouseEnv(gym.Env):
 
     LOCATIONS_SPAN_X = LOCATIONS_RIGHT_START_X - LOCATIONS_LEFT_START_X
 
+    DOOR_START_X = LOCATIONS_RIGHT_START_X + LOCATIONS_LEFT_START_X
+    DOOR_START_Y = LOCATIONS_RIGHT_START_Y + LOCATIONS_SPAN_X / 3
+
+    TRUCK_START_X = DOOR_START_X + LOCATIONS_LEFT_START_X
+    TRUCK_START_Y = LOCATIONS_RIGHT_START_Y + LOCATIONS_SPAN_X / 4
+
     WORKER_WIDTH = 20
     WORKER_HEIGHT = 40
 
@@ -153,6 +161,12 @@ class WarehouseEnv(gym.Env):
     LOCATION_WIDTH = 50
     LOCATION_HEIGHT = 50
 
+    DOOR_WIDTH = 60
+    DOOR_HEIGHT = 80
+
+    TRUCK_WIDTH = 80
+    TRUCK_HEIGHT = 70
+
     STEP_DURATION = 0
 
     # colors
@@ -164,7 +178,7 @@ class WarehouseEnv(gym.Env):
     BLUE = (0, 0, 255)
 
     # dqn policy agents
-    DQN_AGENTS = [2]
+    DQN_AGENTS = []
 
 
     def encode_tasks_and_devices(self, tasks, devices):
@@ -218,9 +232,10 @@ class WarehouseEnv(gym.Env):
         pygame.init()
         self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
 
-        # read the tasks and devices from csv files
+        # read the tasks, devices, and locations from csv files
         tasks_df = pd.read_csv('tasks.csv')
         devices_df = pd.read_csv('devices.csv')
+        locations_df = pd.read_csv('locations.csv')
 
 
         # encode the tasks and devices
@@ -299,34 +314,52 @@ class WarehouseEnv(gym.Env):
         
         self.warehoue_now = warehouse_now 
 
-        # getting all different shelf locations based on provided task list (tasks.csv)
-        locations = [task[self.TASK_FROM_LOC] for task in self.tasks]
-        locations.extend([task[self.TASK_TO_LOC] for task in self.tasks])
-        locations = list(set(locations)) # remove duplicates and get unique locations
-        locations.sort() # sort the locations
-        self.locations = locations
+        # getting all different shelf locations based on locations.csv
+        # locations.csv columns are location,type,product,qty
+        shelf_locations = pd.DataFrame(columns=['location_id', 'X', 'Y', 'left_or_right', 'type', 'product', 'qty'])
 
-        # left locations are odd numbers and right locations are even numbers
-        locations_left = [loc for loc in locations if loc % 2 != 0]
-        locations_right = [loc for loc in locations if loc % 2 == 0]
-        self.locations_left = locations_left
-        self.locations_right = locations_right
+        processed_left_shelves = 0
+        processed_right_shelves = 0
+        processed_doors = 0
+        processed_trucks = 0
 
-        # shelf locations
-        shelf_locations = pd.DataFrame(columns=['location_id', 'X', 'Y', 'left_or_right'])
-        for index, loc in enumerate(self.locations_left):
-            x = self.LOCATIONS_LEFT_START_X
-            y = self.LOCATIONS_LEFT_START_Y + (index * self.LOCATION_HEIGHT)
+        for index, location in locations_df.iterrows():
+            location_id = location['location'][1:]
+            location_type = location['type']
+            product = location['product']
+            qty = location['qty']
 
-            self_location_rec = pd.DataFrame([[loc, x, y, 'left']], columns=shelf_locations.columns)
-            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
+            if(location_type == 'R' or location_type == 'H'):
+                # R = Reserve Shelf (put) location
+                # H = Home Shelf (pick) location
+                # Note: Replenishments are from R to H
+                # if location id (after removing first character) is even, the it is a right shelf
+                left_or_right = 'right' if int(location_id) % 2 == 0 else 'left'
+            
+                if int(location_id) % 2 == 0:
+                    x = self.LOCATIONS_RIGHT_START_X
+                    y = self.LOCATIONS_RIGHT_START_Y + (processed_right_shelves * self.LOCATION_HEIGHT)
+                    processed_right_shelves += 1
+                else:
+                    x = self.LOCATIONS_LEFT_START_X
+                    y = self.LOCATIONS_LEFT_START_Y + (processed_left_shelves * self.LOCATION_HEIGHT)
+                    processed_left_shelves += 1
+            elif(location_type == 'D'):
+                left_or_right = 'none'
+                x = self.DOOR_START_X 
+                y = self.DOOR_START_Y + (processed_doors * self.DOOR_HEIGHT + 10)
+                processed_doors += 1
+            elif(location_type == 'T'):
+                left_or_right = 'none'
+                x = self.TRUCK_START_X
+                y = self.TRUCK_START_Y + (processed_trucks * self.TRUCK_HEIGHT + 10)
+                processed_trucks += 1
 
-        for index, loc in enumerate(self.locations_right):
-            x = self.LOCATIONS_RIGHT_START_X
-            y = self.LOCATIONS_RIGHT_START_Y + (index * self.LOCATION_HEIGHT)
+            # construct a df and concat it with shelf_locations
+            locations_rec = pd.DataFrame([[location_id, x, y, left_or_right, location_type, product, qty]], \
+                                         columns=shelf_locations.columns)
+            shelf_locations = pd.concat([shelf_locations, locations_rec], ignore_index=True)
 
-            self_location_rec = pd.DataFrame([[loc, x, y, 'right']], columns=shelf_locations.columns)
-            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
         
         print("==>[from env - __init__]: shelf_locations: \n", shelf_locations)
         self.shelf_locations = shelf_locations    
@@ -350,6 +383,7 @@ class WarehouseEnv(gym.Env):
             0,  # Task_Id (assume non-negative integers)
             0,  # Type (categorical)
             0,  # Product
+            0,  # Qty
             0,  # From Location
             0,  # To Location
             0,  # Time (might be a float)
@@ -360,6 +394,7 @@ class WarehouseEnv(gym.Env):
             100,  # Task_Id, maximum task id
             3,  # Task Type (if categorical, maximum category value). 3 since we start from 0. so there are four types
             100,  # Product
+            100,  # Qty
             100,  # From Location 
             100,  # To Location
             60,   # Time (if assuming a 24-hour window) 
@@ -624,39 +659,54 @@ class WarehouseEnv(gym.Env):
                 # also move (update) the selected device.
                 task_duration = self.tasks[agent_current_task - 1][self.TASK_TIME]
                 task_from_loc = self.tasks[agent_current_task - 1][self.TASK_FROM_LOC]
-                task_from_loc_X = self.shelf_locations.query(f'location_id == {task_from_loc}')['X'].values[0]
+                print("task_from_loc: ", task_from_loc)
+                # print(self.shelf_locations[self.shelf_locations['location_id'] == '22']['X'].values[0])
+                task_from_loc_X = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['X'].values[0]
+                
                 # if task_from_loc is a left location, make X coordinate of the agent a little right to the shelf
-                if self.shelf_locations.query(f'location_id == {task_from_loc}')['left_or_right'].values[0] == 'left':
+                if self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['left_or_right'].values[0] == 'left':
                     task_from_loc_X = task_from_loc_X + self.LOCATION_WIDTH
                 else:
                     task_from_loc_X = task_from_loc_X - 20
-                task_from_loc_Y = self.shelf_locations.query(f'location_id == {task_from_loc}')['Y'].values[0]
+                task_from_loc_Y = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['Y'].values[0]
 
                 task_to_loc = self.tasks[agent_current_task - 1][self.TASK_TO_LOC]
-                task_to_loc_X = self.shelf_locations.query(f'location_id == {task_to_loc}')['X'].values[0]
+                task_to_loc_X = self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['X'].values[0]
+                
                 # if task_to_loc is a left location, make X coordinate of the agent destination a little right to the shelf
-                if self.shelf_locations.query(f'location_id == {task_to_loc}')['left_or_right'].values[0] == 'left':
+                if self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['left_or_right'].values[0] == 'left':
                     task_to_loc_X = task_to_loc_X + self.LOCATION_WIDTH
                 else:
                     task_to_loc_X = task_to_loc_X - 20
-                task_to_loc_Y = self.shelf_locations.query(f'location_id == {task_to_loc}')['Y'].values[0]
+                task_to_loc_Y = self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['Y'].values[0]
 
                 # distance to be covered by the agent in each time step
                 X_distance_per_time_step = (task_to_loc_X - task_from_loc_X) / task_duration
                 Y_distance_per_time_step = (task_to_loc_Y - task_from_loc_Y) / task_duration
 
-                from_location_type = self.shelf_locations.query(f'location_id == {task_from_loc}')['left_or_right'].values[0]
+                from_location_l_or_r = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['left_or_right'].values[0]
 
+                to_location_type = self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['type'].values[0]
+                from_location_type = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['type'].values[0]
+                
                 # Hence based on agent_current_task_start_time, time_step, task_duration, diagonal_distance, 
                 # task_from_loc_X, task_from_loc_Y, task_to_loc_X, task_to_loc_Y, X_distance_per_time_step and
                 # Y_distance_per_time_step, the X coordinate and Y coordinate of the agent at this moment is:
-                if from_location_type == 'left' and task_to_loc_X > task_from_loc_X:
+                if from_location_l_or_r == 'left' and task_to_loc_X > task_from_loc_X:
                     # agent should go from left to right
                     agent_X = task_from_loc_X + (X_distance_per_time_step * (time_step - agent_current_task_start_time))
                     agent_Y = task_from_loc_Y + (Y_distance_per_time_step * (time_step - agent_current_task_start_time))
-                elif from_location_type == 'right' and task_to_loc_X < task_from_loc_X:
+                elif from_location_l_or_r == 'right' and task_to_loc_X < task_from_loc_X:
                     # agent should go from right to left
                     # here X_distance_per_time_step is negative
+                    agent_X = task_from_loc_X + (X_distance_per_time_step * (time_step - agent_current_task_start_time))
+                    agent_Y = task_from_loc_Y + (Y_distance_per_time_step * (time_step - agent_current_task_start_time))
+                elif to_location_type == 'D' or from_location_type == 'D':
+                    # agent should go to or come from door
+                    agent_X = task_from_loc_X + (X_distance_per_time_step * (time_step - agent_current_task_start_time))
+                    agent_Y = task_from_loc_Y + (Y_distance_per_time_step * (time_step - agent_current_task_start_time))
+                elif to_location_type == 'T' or from_location_type == 'T':
+                    # agent should go to or come from truck
                     agent_X = task_from_loc_X + (X_distance_per_time_step * (time_step - agent_current_task_start_time))
                     agent_Y = task_from_loc_Y + (Y_distance_per_time_step * (time_step - agent_current_task_start_time))
                 elif int(X_distance_per_time_step) == 0 and Y_distance_per_time_step < 0:
@@ -896,15 +946,31 @@ class WarehouseEnv(gym.Env):
         location_right = pygame.transform.scale(location_right, (self.LOCATION_WIDTH, self.LOCATION_HEIGHT))
         location_right_rect = location_right.get_rect()
 
+        door = pygame.image.load("door.png")
+        door = pygame.transform.scale(door, (self.DOOR_WIDTH, self.DOOR_HEIGHT))
+        door_rect = door.get_rect()
+
+        truck = pygame.image.load("truck.png")
+        truck = pygame.transform.scale(truck, (self.TRUCK_WIDTH, self.TRUCK_HEIGHT))
+        truck_rect = truck.get_rect()
+
         for index, loc in self.shelf_locations.iterrows():
             if loc['left_or_right'] == 'left':
                 location_left_rect.x = loc['X']
                 location_left_rect.y = loc['Y']
                 self.screen.blit(location_left, location_left_rect)
-            else:
+            elif loc['left_or_right'] == 'right':
                 location_right_rect.x = loc['X']
                 location_right_rect.y = loc['Y']
                 self.screen.blit(location_right, location_right_rect)
+            elif loc['type'] == 'D':
+                door_rect.x = loc['X']
+                door_rect.y = loc['Y']
+                self.screen.blit(door, door_rect)
+            elif loc['type'] == 'T':
+                truck_rect.x = loc['X']
+                truck_rect.y = loc['Y']
+                self.screen.blit(truck, truck_rect)
 
     # render devices
     def _render_devices(self):

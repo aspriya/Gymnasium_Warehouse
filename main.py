@@ -79,7 +79,7 @@ while not done:
     task_completion_records = pd.concat([task_completion_records, task_completion_rec], ignore_index=True)
 
     print(f"\n=====> [main] : start of time step: {time_step}")
-    for index, agent in env.agents.iterrows():
+    for index, agent in env.agents.iterrows(): 
         agent_id = agent['agent_id']
 
         current_action = agent["current_task"]
@@ -238,6 +238,7 @@ plt.legend()
 
 plt.show()
 
-
+# save task_completion_records to a csv file
+task_completion_records.to_csv("task_completion_records.csv", index=False)
 
 
