@@ -118,7 +118,7 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # ------------------
     # Define Input Shapes (Adjust based on your exact features)
     # ------------------
-    task_input_shape = tasks_shape  # 2D tensor (num_tasks, 8). 8 means number of features of each task
+    task_input_shape = tasks_shape  # 2D tensor (num_tasks, 9). 9 means number of features of each task
     # device_input_shape = devices_shape  # 2D tensor (num_devices, 4). 4 means number of features of each device
 
     # ------------------
@@ -180,7 +180,7 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
 
     return model
 
-# Training setup
+  # Training setup
 # env = gym.make("CartPole-v1")  # Create the environment
 env = WarehouseEnv()  # Create the environment
 dqn = create_dqn((60,3), env.observation_space['devices'].shape, env.action_space.n) #  None for variable number of observations

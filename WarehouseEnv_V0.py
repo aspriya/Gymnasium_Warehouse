@@ -328,6 +328,8 @@ class WarehouseEnv(gym.Env):
             location_type = location['type']
             product = location['product']
             qty = location['qty']
+            if np.isnan(qty):
+                qty = 0 
 
             if(location_type == 'R' or location_type == 'H'):
                 # R = Reserve Shelf (put) location
@@ -642,6 +644,14 @@ class WarehouseEnv(gym.Env):
         agent_current_task_start_time = self.agents.query(f'agent_id == {agent}')['current_task_start_time'].values[0]
         agent_current_device = self.agents.query(f'agent_id == {agent}')['current_device'].values[0]
         agent_current_reward = self.agents.query(f'agent_id == {agent}')['reward'].values[0]
+        
+        # get suggested task details
+        task_from_loc = self.tasks[action_index][self.TASK_FROM_LOC]
+        task_to_loc = self.tasks[action_index][self.TASK_TO_LOC]
+        task_qty = self.tasks[action_index][self.TASK_QTY]
+        task_from_loc_qty = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['qty'].values[0]
+
+        # set the reward to 0
         reward = 0 # step reward
 
         # Here, an action will be a task_id and based on task status we can return a reward.
@@ -650,6 +660,9 @@ class WarehouseEnv(gym.Env):
 
         # check if agent is still active (doing a task)
         if agent_status == self.ACTIVE:
+
+            task_from_loc = self.tasks[agent_current_task - 1][self.TASK_FROM_LOC]
+            task_to_loc = self.tasks[agent_current_task - 1][self.TASK_TO_LOC]
 
             # if agent is still active and have more time to complete the task, move him towards to_loc
             if time_step <= agent_current_task_start_time + self.tasks[agent_current_task - 1][self.TASK_TIME]:
@@ -740,6 +753,14 @@ class WarehouseEnv(gym.Env):
                 # update task report
                 self.task_report.loc[self.task_report["task_id"] == agent_current_task, "end_time"] = time_step
 
+                # update the drop location quantity
+                # self.shelf_locations is a dataframe with columns location_id, X, Y, left_or_right, type, product, qty
+                print("task_to_loc: ", task_to_loc)
+                print("current_shelf_qty: ", self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['qty'].values[0])
+                current_shelf_qty = self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['qty'].values[0]
+                task_qty = self.tasks[agent_current_task - 1][self.TASK_QTY]
+                self.shelf_locations.loc[self.shelf_locations['location_id'] == str(task_to_loc), 'qty'] = current_shelf_qty + task_qty
+
                 # make the agent free
                 self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
                 self.agents.loc[self.agents['agent_id'] == agent, 'current_task'] = -1
@@ -778,6 +799,13 @@ class WarehouseEnv(gym.Env):
                 reward = -1
                 # update the reward of the agent
                 self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
+            
+            elif task_from_loc_qty < task_qty:
+                # Punish if the location has not enough quantity to pick
+                print(f"=======> [from env - step]: location {task_from_loc} has not enough quantity to pick")
+                reward = -1
+                # update the reward of the agent
+                self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
             else:
                 # make agent active and assign the task
                 self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_ACTIVE
@@ -813,6 +841,10 @@ class WarehouseEnv(gym.Env):
                                     # assign the device to agent too
                                     self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = device[self.DEVICE_ID]
                                     break
+                            
+                            # reduce the quantity of the from location
+                            self.shelf_locations.loc[self.shelf_locations['location_id'] == str(task_from_loc), 'qty'] = task_from_loc_qty - task_qty
+
                         else:
                             # as there is no available device to work on this task, free the agent and move to default location
                             self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
@@ -853,6 +885,10 @@ class WarehouseEnv(gym.Env):
                                     # assign the device to agent too
                                     self.agents.loc[self.agents['agent_id'] == agent, 'current_device'] = device[self.DEVICE_ID]
                                     break
+                        
+                            # reduce the quantity of the from location
+                            self.shelf_locations.loc[self.shelf_locations['location_id'] == str(task_from_loc), 'qty'] = task_from_loc_qty - task_qty
+
                         else:
                             # as there is no available device to work on this task, free the agent and move to default location
                             self.agents.loc[self.agents['agent_id'] == agent, "status"] = self.AGENT_AVAILABLE
@@ -898,6 +934,10 @@ class WarehouseEnv(gym.Env):
                         
                         # make the task to active status
                         self.tasks[action_index][self.TASK_STATUS] = self.ACTIVE
+
+                        # reduce the quantity of the from location
+                        self.shelf_locations.loc[self.shelf_locations['location_id'] == str(task_from_loc), 'qty'] = task_from_loc_qty - task_qty
+
 
             # add a record to task report
             agent_current_device = self.agents.query(f'agent_id == {agent}')['current_device'].values[0]
@@ -954,23 +994,52 @@ class WarehouseEnv(gym.Env):
         truck = pygame.transform.scale(truck, (self.TRUCK_WIDTH, self.TRUCK_HEIGHT))
         truck_rect = truck.get_rect()
 
+        font = pygame.font.Font('freesansbold.ttf', 16)
+
         for index, loc in self.shelf_locations.iterrows():
+
+            text = font.render(f"{loc['type']} : {loc['qty']}", True, (0, 0, 255))
+            text_rect = text.get_rect()
+
+
             if loc['left_or_right'] == 'left':
                 location_left_rect.x = loc['X']
                 location_left_rect.y = loc['Y']
                 self.screen.blit(location_left, location_left_rect)
+
+                text_rect.center = location_left_rect.center
+                text_rect.centerx = text_rect.centerx - 70
+                self.screen.blit(text, text_rect)
+
+
             elif loc['left_or_right'] == 'right':
                 location_right_rect.x = loc['X']
                 location_right_rect.y = loc['Y']
                 self.screen.blit(location_right, location_right_rect)
+
+                text_rect.center = location_right_rect.center
+                text_rect.centerx = text_rect.centerx + 62
+                self.screen.blit(text, text_rect)
+
             elif loc['type'] == 'D':
                 door_rect.x = loc['X']
                 door_rect.y = loc['Y']
                 self.screen.blit(door, door_rect)
+
+                text_rect.center = door_rect.center
+                text_rect.centerx = text_rect.centerx + 62
+                self.screen.blit(text, text_rect)
+
+
             elif loc['type'] == 'T':
                 truck_rect.x = loc['X']
                 truck_rect.y = loc['Y']
                 self.screen.blit(truck, truck_rect)
+
+                text_rect.center = truck_rect.center
+                text_rect.centerx = text_rect.centerx + 75
+                self.screen.blit(text, text_rect)
+
 
     # render devices
     def _render_devices(self):

@@ -171,6 +171,9 @@ while not done:
 
             # do the action on environment and get the next state, reward, done, truncated and info
             next_state, reward, done, truncated, info = env.step(agent_id, action, time_step)
+        
+    if time_step == 400:
+        break
 
 
 print("Simulation done!")
@@ -182,6 +185,21 @@ for index, row in env.task_report.iterrows():
         env.task_report.loc[index, "end_time"] = row["start_time"] + row["task_time"]
 
 print(env.task_report)
+
+# saving the env tasks
+final_task_status = pd.DataFrame(columns=['task_id','type','product','qty','from loc','to loc','time','order','status'])
+print("Env Tasks after simulation done:")
+for row in env.tasks:  # Iterate over rows
+    task_rec = pd.DataFrame([[
+        row[env.TASK_ID], row[env.TASK_TYPE], row[env.TASK_PRODUCT], row[env.TASK_QTY], row[env.TASK_FROM_LOC], row[env.TASK_TO_LOC],\
+        row[env.TASK_TIME], row[env.TASK_ORDER], row[env.TASK_STATUS]
+    ]]
+    )
+    final_task_status = pd.concat([final_task_status, task_rec], ignore_index=True)
+
+# save final_task_status
+final_task_status.to_csv("final_task_status.csv", index=False)
+
 
 # a df to store agent task distribution
 agent_task_distribution = pd.DataFrame(columns=["agent_id", "total_tasks", "total_time", "avg_time_per_task"])
