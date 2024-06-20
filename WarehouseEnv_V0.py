@@ -211,8 +211,8 @@ class WarehouseEnv(gym.Env):
         device_list = devices.to_numpy().tolist()
         device_list = [list( map(int,i) ) for i in device_list]
 
-        print("[encoding]: encoded task_list: ", task_list)
-        print("[encoding]: encoded device_list: ", device_list)
+        print("[WarehouseEnv_V0.py][encoding]: encoded task_list: ", task_list)
+        print("[WarehouseEnv_V0.py][encoding]: encoded device_list: ", device_list)
 
         return task_list, device_list
 
@@ -245,7 +245,7 @@ class WarehouseEnv(gym.Env):
         self.tasks = task_list # an observation
         self.devices = device_list # an observation
 
-        self.action_space = spaces.Discrete(len(tasks_df)); # assuming at a given time max number of actions is 100.
+        self.action_space = spaces.Discrete(len(tasks_df)); # number of actions is the number of tasks.
 
         ####################################
         #### Rendering Related Details #####
@@ -363,7 +363,7 @@ class WarehouseEnv(gym.Env):
             shelf_locations = pd.concat([shelf_locations, locations_rec], ignore_index=True)
 
         
-        print("==>[from env - __init__]: shelf_locations: \n", shelf_locations)
+        print("==>[WarehouseEnv_V0.py][__init__]: shelf_locations: \n", shelf_locations)
         self.shelf_locations = shelf_locations    
 
         ####################################
@@ -538,36 +538,56 @@ class WarehouseEnv(gym.Env):
         
         self.warehoue_now = warehouse_now 
 
-        # getting all different shelf locations based on provided task list (tasks.csv)
-        locations = [task[self.TASK_FROM_LOC] for task in self.tasks]
-        locations.extend([task[self.TASK_TO_LOC] for task in self.tasks])
-        locations = list(set(locations)) # remove duplicates and get unique locations
-        locations.sort() # sort the locations
-        self.locations = locations
+        # getting all different shelf locations based on locations.csv
+        # locations.csv columns are location,type,product,qty
+        locations_df = pd.read_csv('locations.csv')
+        shelf_locations = pd.DataFrame(columns=['location_id', 'X', 'Y', 'left_or_right', 'type', 'product', 'qty'])
 
-        # left locations are odd numbers and right locations are even numbers
-        locations_left = [loc for loc in locations if loc % 2 != 0]
-        locations_right = [loc for loc in locations if loc % 2 == 0]
-        self.locations_left = locations_left
-        self.locations_right = locations_right
+        processed_left_shelves = 0
+        processed_right_shelves = 0
+        processed_doors = 0
+        processed_trucks = 0
 
-        # shelf locations
-        shelf_locations = pd.DataFrame(columns=['location_id', 'X', 'Y', 'left_or_right'])
-        for index, loc in enumerate(self.locations_left):
-            x = self.LOCATIONS_LEFT_START_X
-            y = self.LOCATIONS_LEFT_START_Y + (index * self.LOCATION_HEIGHT)
+        for index, location in locations_df.iterrows():
+            location_id = location['location'][1:]
+            location_type = location['type']
+            product = location['product']
+            qty = location['qty']
+            if np.isnan(qty):
+                qty = 0 
 
-            self_location_rec = pd.DataFrame([[loc, x, y, 'left']], columns=shelf_locations.columns)
-            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
+            if(location_type == 'R' or location_type == 'H'):
+                # R = Reserve Shelf (put) location
+                # H = Home Shelf (pick) location
+                # Note: Replenishments are from R to H
+                # if location id (after removing first character) is even, the it is a right shelf
+                left_or_right = 'right' if int(location_id) % 2 == 0 else 'left'
+            
+                if int(location_id) % 2 == 0:
+                    x = self.LOCATIONS_RIGHT_START_X
+                    y = self.LOCATIONS_RIGHT_START_Y + (processed_right_shelves * self.LOCATION_HEIGHT)
+                    processed_right_shelves += 1
+                else:
+                    x = self.LOCATIONS_LEFT_START_X
+                    y = self.LOCATIONS_LEFT_START_Y + (processed_left_shelves * self.LOCATION_HEIGHT)
+                    processed_left_shelves += 1
+            elif(location_type == 'D'):
+                left_or_right = 'none'
+                x = self.DOOR_START_X 
+                y = self.DOOR_START_Y + (processed_doors * self.DOOR_HEIGHT + 10)
+                processed_doors += 1
+            elif(location_type == 'T'):
+                left_or_right = 'none'
+                x = self.TRUCK_START_X
+                y = self.TRUCK_START_Y + (processed_trucks * self.TRUCK_HEIGHT + 10)
+                processed_trucks += 1
 
-        for index, loc in enumerate(self.locations_right):
-            x = self.LOCATIONS_RIGHT_START_X
-            y = self.LOCATIONS_RIGHT_START_Y + (index * self.LOCATION_HEIGHT)
-
-            self_location_rec = pd.DataFrame([[loc, x, y, 'right']], columns=shelf_locations.columns)
-            shelf_locations = pd.concat([shelf_locations, self_location_rec], ignore_index=True)
-        
-        print("==>[from env - __init__]: shelf_locations: \n", shelf_locations)
+            # construct a df and concat it with shelf_locations
+            locations_rec = pd.DataFrame([[location_id, x, y, left_or_right, location_type, product, qty]], \
+                                         columns=shelf_locations.columns)
+            shelf_locations = pd.concat([shelf_locations, locations_rec], ignore_index=True)
+   
+        print("==>[WarehouseEnv_V0.py][__init__]: shelf_locations: \n", shelf_locations)
         self.shelf_locations = shelf_locations    
 
         ####################################
@@ -589,6 +609,7 @@ class WarehouseEnv(gym.Env):
             0,  # Task_Id (assume non-negative integers)
             0,  # Type (categorical)
             0,  # Product
+            0,  # Qty
             0,  # From Location
             0,  # To Location
             0,  # Time (might be a float)
@@ -599,6 +620,7 @@ class WarehouseEnv(gym.Env):
             100,  # Task_Id, maximum task id
             3,  # Task Type (if categorical, maximum category value). 3 since we start from 0. so there are four types
             100,  # Product
+            100,  # Qty
             100,  # From Location 
             100,  # To Location
             60,   # Time (if assuming a 24-hour window) 
@@ -649,13 +671,19 @@ class WarehouseEnv(gym.Env):
         task_from_loc = self.tasks[action_index][self.TASK_FROM_LOC]
         task_to_loc = self.tasks[action_index][self.TASK_TO_LOC]
         task_qty = self.tasks[action_index][self.TASK_QTY]
+
+        print("=======> [WarehouseEnv_V0.py][step] task_from_loc :", task_from_loc, " task_to_loc: ", task_to_loc, " task_qty: ", task_qty)
+
         task_from_loc_qty = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['qty'].values[0]
+
+        print("=======> [WarehouseEnv_V0.py][step] task_from_loc_qty: ", task_from_loc_qty)
 
         # set the reward to 0
         reward = 0 # step reward
 
         # Here, an action will be a task_id and based on task status we can return a reward.
-        print(f"=======> [from env - step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} with device: {agent_current_device} at Time Step: {time_step}")
+        print(f"=======> [WarehouseEnv_V0.py][step]: {agent_type_str} agent with id: {agent} chose action (task id): {action} with device: {agent_current_device} at Time Step: {time_step}")
+
 
 
         # check if agent is still active (doing a task)
@@ -666,13 +694,13 @@ class WarehouseEnv(gym.Env):
 
             # if agent is still active and have more time to complete the task, move him towards to_loc
             if time_step <= agent_current_task_start_time + self.tasks[agent_current_task - 1][self.TASK_TIME]:
-                print(f"=======> [from env - step]: agent is still active doing task {agent_current_task}, hence skipping to next agent")
+                print(f"=======> [WarehouseEnv_V0.py][step]: agent is still active doing task {agent_current_task}, hence skipping to next agent")
                 
                 # update agent location (decide based on current time step, task from location and task to location)
                 # also move (update) the selected device.
                 task_duration = self.tasks[agent_current_task - 1][self.TASK_TIME]
                 task_from_loc = self.tasks[agent_current_task - 1][self.TASK_FROM_LOC]
-                print("task_from_loc: ", task_from_loc)
+                print("[WarehouseEnv_V0.py][step] task_from_loc: ", task_from_loc)
                 # print(self.shelf_locations[self.shelf_locations['location_id'] == '22']['X'].values[0])
                 task_from_loc_X = self.shelf_locations[self.shelf_locations['location_id'] == str(task_from_loc)]['X'].values[0]
                 
@@ -748,15 +776,15 @@ class WarehouseEnv(gym.Env):
                 
                 reward = 0
             else: # if agent is done with the task, make agent free
-                print(f"=======> [from env - step]: agent is finishing the task {agent_current_task} at time step {time_step}")
+                print(f"=======> [WarehouseEnv_V0.py][step]: agent is finishing the task {agent_current_task} at time step {time_step}")
 
                 # update task report
                 self.task_report.loc[self.task_report["task_id"] == agent_current_task, "end_time"] = time_step
 
                 # update the drop location quantity
                 # self.shelf_locations is a dataframe with columns location_id, X, Y, left_or_right, type, product, qty
-                print("task_to_loc: ", task_to_loc)
-                print("current_shelf_qty: ", self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['qty'].values[0])
+                print("[WarehouseEnv_V0.py][step] task_to_loc: ", task_to_loc)
+                print("[WarehouseEnv_V0.py][step] current_shelf_qty: ", self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['qty'].values[0])
                 current_shelf_qty = self.shelf_locations[self.shelf_locations['location_id'] == str(task_to_loc)]['qty'].values[0]
                 task_qty = self.tasks[agent_current_task - 1][self.TASK_QTY]
                 self.shelf_locations.loc[self.shelf_locations['location_id'] == str(task_to_loc), 'qty'] = current_shelf_qty + task_qty
@@ -783,26 +811,26 @@ class WarehouseEnv(gym.Env):
                 self.devices[agent_current_device - 1][self.DEVICE_STATUS] = self.AVAILABLE
                 self.devices[agent_current_device - 1][self.DEVICE_CURRENT_TASK_ID] = -1
 
-                print(f"=======> [from env - step]: agent is now in {self.AGENT_AVAILABLE} state at time step {time_step}")
+                print(f"=======> [WarehouseEnv_V0.py][step]: agent is now in {self.AGENT_AVAILABLE} state at time step {time_step}")
         else: # If the agent is Available (FREE to take up the suggested task)
             # REWARD CALCULATION
             if action > len(self.tasks):
                 # Punish if the selected task is grater than available number of tasks
-                print(f"=======> [from env]: Received a task id {action} is grater than available number of tasks")
+                print(f"=======> [WarehouseEnv_V0.py][step]: Received a task id {action} is grater than available number of tasks")
                 reward = -1
                 # update the reward of the agent
                 self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
                 
             elif self.tasks[action_index][self.TASK_STATUS] != self.AVAILABLE:
                 # Punish if the selected task is alreay active (Assigned) or completed (done)
-                print(f"=======> [from env - step]: selected task {action} is not available. It is active or already done!")
+                print(f"=======> [WarehouseEnv_V0.py][step]: selected task {action} is not available. It is active or already done!")
                 reward = -1
                 # update the reward of the agent
                 self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
             
             elif task_from_loc_qty < task_qty:
                 # Punish if the location has not enough quantity to pick
-                print(f"=======> [from env - step]: location {task_from_loc} has not enough quantity to pick")
+                print(f"=======> [WarehouseEnv_V0.py][step]: location {task_from_loc} has not enough quantity to pick")
                 reward = -1
                 # update the reward of the agent
                 self.agents.loc[self.agents['agent_id'] == agent, "reward"] = agent_current_reward + reward
@@ -815,15 +843,15 @@ class WarehouseEnv(gym.Env):
                 # if agent is human
                 if agent_type == self.HUMAN:
 
-                    print("=======> [from env - step]: in human reward calculation 1")
+                    print("=======> [WarehouseEnv_V0.py][step]: in human reward calculation 1")
 
                     # if task is a pick, a pallet_jack is needed. 
                     if self.tasks[action_index][self.TASK_TYPE] == self.PICK:
-                        print("=======> [from env - step]: task is a pick task")
+                        print("=======> [WarehouseEnv_V0.py][step]: task is a pick task")
                         pallet_jacks = [device for device in self.devices if device[self.DEVICE_TYPE] == self.PALLET_JACK]
                         num_available_pallet_jacks = len([pj for pj in pallet_jacks if pj[self.DEVICE_STATUS] == self.AVAILABLE])
 
-                        print("=======> [from env - step]: number of available pallet jacks: ", num_available_pallet_jacks)
+                        print("=======> [WarehouseEnv_V0.py][step]: number of available pallet jacks: ", num_available_pallet_jacks)
 
                         if num_available_pallet_jacks > 0:
                             reward = 1
@@ -862,11 +890,11 @@ class WarehouseEnv(gym.Env):
                             # Agent should learn to not to select tasks if no available devices (although there are available tasks)
                         
                     else: #every other task types needs a forklift 
-                        print("=======> [from env - step]: task is a forklift task")
+                        print("=======> [WarehouseEnv_V0.py][step]: task is a forklift task")
                         forklifts = [device for device in self.devices if device[self.DEVICE_TYPE] == self.FORKLIFT]
                         num_available_forklifts = len([fk for fk in forklifts if fk[self.DEVICE_STATUS] == self.AVAILABLE])
 
-                        print("=======> [from env - step]: number of available forklifts: ", num_available_forklifts)
+                        print("=======> [WarehouseEnv_V0.py][step]: number of available forklifts: ", num_available_forklifts)
 
                         if num_available_forklifts > 0:
                             reward = 1
@@ -907,7 +935,7 @@ class WarehouseEnv(gym.Env):
 
                             # This is because the agent should learn to not to select tasks if no available devices 
                             # (although there are available tasks)
-                        print("=======> [from env - step]: reward: ", reward)
+                        print("=======> [WarehouseEnv_V0.py][step]: reward: ", reward)
 
                 else: # robots can only do pick tasks and they dont need any devices for that. 
 
@@ -946,7 +974,7 @@ class WarehouseEnv(gym.Env):
                 task_report_rec = pd.DataFrame([[action, agent, agent_current_device, self.tasks[action_index][self.TASK_TIME], time_step, None]], columns=self.task_report.columns)
                 self.task_report = pd.concat([self.task_report, task_report_rec], ignore_index=True)
 
-        print("=======> [from env - step]: reward: ", reward)
+        print("=======> [WarehouseEnv_V0.py][step]: reward: ", reward)
         # DONE?
         num_available_tasks = len([task for task in self.tasks if task[self.TASK_STATUS] == self.AVAILABLE])
         if num_available_tasks > 0:
@@ -954,13 +982,13 @@ class WarehouseEnv(gym.Env):
         else:
             done = True
 
-        print("=======> [from env - step]: after this, num_available_tasks: ", num_available_tasks)
-        print("=======> [from env - step]: done: ", done)
+        print("=======> [WarehouseEnv_V0.py][step]: after this, num_available_tasks: ", num_available_tasks)
+        print("=======> [WarehouseEnv_V0.py][step]: done: ", done)
 
         # TRUNCATED?
         truncated = False
 
-        print("=======> [from env - step]: truncated: ", truncated)
+        print("=======> [WarehouseEnv_V0.py][step]: truncated: ", truncated)
         
 
         # INFO?
@@ -1231,7 +1259,7 @@ class WarehouseEnv(gym.Env):
         if mode == 'human':
             self._render_pygame()
         else:
-            print(f"=======> [from env - render]: {mode} not supported at this moment")
+            print(f"=======> [WarehouseEnv_V0.py][render]: {mode} not supported at this moment")
             
     
     def close(self):

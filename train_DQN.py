@@ -130,7 +130,7 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # ------------------
     # Initial Task Processing 
     # ------------------
-    task_x = Dense(10, activation='relu')(task_input)  # Adjust layers as needed
+    task_x = Dense(160, activation='relu')(task_input)  # Adjust layers as needed
     # task_x = Dense(100, activation='relu')(task_x)
 
     # ------------------
@@ -156,7 +156,7 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
     # ------------------
     # Flatten the combined input before the output layer
     # ------------------
-    flattened_x1 = Reshape((1, 10 * num_actions))(task_x)  # Flatten the input for the output layer
+    flattened_x1 = Reshape((1, 160 * num_actions))(task_x)  # Flatten the input for the output layer
 
     # flattened_x1 = Dense(num_actions, activation='relu')(flattened_x1)  # Flatten the input for the output layer
 
@@ -182,9 +182,10 @@ def create_dqn(tasks_shape, devices_shape, num_actions):
 
   # Training setup
 # env = gym.make("CartPole-v1")  # Create the environment
+
 env = WarehouseEnv()  # Create the environment
-dqn = create_dqn((60,3), env.observation_space['devices'].shape, env.action_space.n) #  None for variable number of observations
-target_dqn = create_dqn((60,3), env.observation_space['devices'].shape, env.action_space.n)
+dqn = create_dqn((env.action_space.n,3), env.observation_space['devices'].shape, env.action_space.n) #  None for variable number of observations
+target_dqn = create_dqn((env.action_space.n,3), env.observation_space['devices'].shape, env.action_space.n)
 target_dqn.set_weights(dqn.get_weights())  # Initialize target network with same weights
 
 buffer = ReplayBuffer(50000) # Initialize replay buffer with capacity of 50,000 experience samples
@@ -194,7 +195,7 @@ batch_size = 10
 
 
 # Training loop
-training_agent_id = 2
+training_agent_id = 1
 losses = []
 
 for episode in range(11):
@@ -250,10 +251,12 @@ for episode in range(11):
                     # if task status is DONE, update all values in the task with 0
                     for i, task in enumerate(task_obsveration_for_dqn):
                         if task[env.TASK_STATUS] == env.DONE:
-                            task_obsveration_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0]
+                            task_obsveration_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-                    task_obsveration_for_dqn = np.array(task_obsveration_for_dqn)
-                    task_obsveration_for_dqn = task_obsveration_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]]
+                    print("====> [train_DQN] task_observation_for_dqn: ", task_obsveration_for_dqn)
+
+                    task_obsveration_for_dqn = np.array(task_obsveration_for_dqn) # 
+                    task_obsveration_for_dqn = task_obsveration_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]] # here we 
                     
                     # normalize the task observation
                     task_obsveration_for_dqn = np.array(task_obsveration_for_dqn, dtype=float)
@@ -274,7 +277,7 @@ for episode in range(11):
                     # if task status is not AVAILABLE, update all values in the task with 0
                     for i, task in enumerate(next_state_task_obsveration_for_dqn):
                         if task[env.TASK_STATUS] == env.DONE:
-                            next_state_task_obsveration_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0]
+                            next_state_task_obsveration_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
                     
                     next_state_task_obsveration_for_dqn = np.array(next_state_task_obsveration_for_dqn)
                     next_state_task_obsveration_for_dqn = next_state_task_obsveration_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]]

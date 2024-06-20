@@ -123,7 +123,7 @@ while not done:
                 # if task status is Done, update all values in the task with 0
                 for i, task in enumerate(observed_tasks_for_dqn):
                     if task[env.TASK_STATUS] == env.DONE:
-                        observed_tasks_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0]
+                        observed_tasks_for_dqn[i] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 
                 ## store only task_id, task_type, order, status
                 observed_tasks_for_dqn = observed_tasks_for_dqn[:, [env.TASK_TYPE, env.TASK_ORDER, env.TASK_STATUS]]
@@ -172,7 +172,7 @@ while not done:
             # do the action on environment and get the next state, reward, done, truncated and info
             next_state, reward, done, truncated, info = env.step(agent_id, action, time_step)
         
-    if time_step == 400:
+    if time_step == 210:
         break
 
 

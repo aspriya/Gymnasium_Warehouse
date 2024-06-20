@@ -2,3 +2,5 @@ device_id,type,status,current_task_id
 001,forklift,available,-1
 002,forklift,available,-1
 003,forklift,available,-1
+004,pallet_jack,available,-1
+005,pallet_jack,available,-1
